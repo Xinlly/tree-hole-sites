@@ -122,10 +122,7 @@ export function getDb() {
 
 - **R1 原生模块在 Ubuntu 的可用性**：spike 已证实 13.0.3 带 linux-x64 glibc prebuild，本机加载成功；Ubuntu 24.04 默认含 libstdc++6。残余风险：无（最终以 Gate/真机部署为准，本线不部署）。
 - **R2 standalone 是否含原生 .node（关键实测点）**：Next 的文件追踪可能漏 better-sqlite3。验收必须实际启动 `.next/standalone/server.js` 并打通一个写库请求；漏则按 2.5 加配置后重测，不接受"build 成功"单独作为结论。
-- **R3 secure cookie 与"先 HTTP 80"冲突（需协调者知悉）**：`tree-hole-auth.ts` 中两个 cookie 均 `secure: true`。浏览器在纯 `http://` 下**不会保存** secure cookie，访客/管理员解锁必然失败（浏览器标准行为）。任务书同时要求"鉴权保持不动"与"nginx 先 HTTP 80"，二者不可兼得。选项：
-  - (a) 部署时 nginx 直接配 TLS（自签证书，内网浏览器有警告）——不改代码，**建议**；
-  - (b) 坚持明文 HTTP，则必须改 cookie secure 标志——超出本次解耦范围，须另行批准。
-  - 本设计按"鉴权不动"执行，部署建议按 (a)，请协调者在 Gate 前确认。
+- **R3 secure cookie 与"先 HTTP 80"冲突（已裁决，2026-09-28）**：`tree-hole-auth.ts` 中两个 cookie 均 `secure: true`，纯 `http://` 下浏览器不保存 secure cookie，解锁必失败。协调者裁决：**鉴权代码不动，部署直接上 TLS**——nginx 层 openssl 自签证书（证书/私钥仅存 VM，不入库、不打印），内网 192.168.0.183 使用，浏览器一次性信任告警可接受；nginx 仅监听 443（可保留 80→443 跳转），反代到 Node standalone 端口走 http；将来有正式域名再换正规证书，属独立事项。
 - **R4 时间戳语义**：D1 与 SQLite 的 `CURRENT_TIMESTAMP` 均为 UTC、格式 `YYYY-MM-DD HH:MM:SS`，页面按本地时区 `Intl` 解析，行为一致。
 - **R5 id 语义**：SQLite `AUTOINCREMENT` 与 D1 同样保证删除后 id 不复用。
 - **R6 连接模型**：单 systemd 实例 = 单连接单例；默认 journal 模式对低并发小站足够，不引入 WAL 等额外配置（K2）。Next dev 热重载可能产生多连接，仅开发期现象，不处理。
@@ -148,7 +145,7 @@ export function getDb() {
 3. systemd：新建 `tree-hole` 用户；`/etc/systemd/system/tree-hole.service`：
    `WorkingDirectory=/opt/tree-hole`、`ExecStart=/usr/bin/node server.js`、
    `EnvironmentFile=/etc/tree-hole/tree-hole.env`（0600，含 `TREE_HOLE_PASSWORD`/`TREE_HOLE_ADMIN_PASSWORD`/`TREE_HOLE_DB_PATH=/var/lib/tree-hole/tree-hole.db`，密码绝不入库）；`Restart=always`。
-4. nginx：80 端口 `proxy_pass http://127.0.0.1:3000`，带 `X-Forwarded-For/Proto/Host`；**按 R3 建议尽快加 TLS（443）**。
+4. nginx（按 R3 裁决，TLS）：在 VM 上用 openssl 生成自签证书（证书/私钥仅存 VM，如 `/etc/nginx/certs/`，权限 0600/0644，不入库、不打印）；nginx 仅监听 443 ssl，`proxy_pass http://127.0.0.1:3000`，带 `X-Forwarded-For/Proto/Host`（`X-Forwarded-Proto https`）；可保留 80→443 跳转。浏览器访问 `https://192.168.0.183` 一次性信任自签告警。将来有正式域名再换正规证书（独立事项）。
 5. 备份：每日 cron 对 DB 做 `sqlite3 <db> ".backup <dest>"`（安装 sqlite3）或冷拷贝到 `/var/backups/tree-hole/`，保留 7 份。
 6. 上线后实测：`systemctl status`、`free -h`、浏览器走完整解锁/留言/封存/管理员流程。
 
