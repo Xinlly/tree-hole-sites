@@ -45,6 +45,9 @@ export interface Store {
 - `class ObjectStore implements Store`，构造时用 `@aws-sdk/client-s3` 的 `S3Client`：
 
 ```ts
+import { S3Client } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
+
 new S3Client({
   region: process.env.STORAGE_OBJECT_REGION,
   endpoint: process.env.STORAGE_OBJECT_ENDPOINT,   // 如 https://s3.oss-cn-hangzhou.aliyuncs.com
@@ -52,8 +55,15 @@ new S3Client({
     accessKeyId: process.env.STORAGE_OBJECT_ACCESS_KEY_ID,
     secretAccessKey: process.env.STORAGE_OBJECT_SECRET_ACCESS_KEY,
   },
+  // 硬上限（非 SDK 默认值——已核 SDK 源码，默认 requestTimeout=undefined=无限等待）：
+  requestHandler: new NodeHttpHandler({
+    requestTimeout: 5000,      // 单个请求最多 5s
+    connectionTimeout: 3000,   // 建连最多 3s
+  }),
 });
 ```
+
+> `@smithy/node-http-handler` 随 `@aws-sdk/client-s3` 传递安装，不新增直接依赖。超时/连接失败即 reject，由路由现有 `toErrorMessage` 返回 500、UI 走现有失败提示；不做缓存、不静默降级。
 
 - **禁止设置 `forcePathStyle`**：阿里云 OSS 仅支持虚拟托管风格（bucket 作子域名），path style 会被拒（依据：阿里云《S3 兼容性支持范围差异详解》）。AWS SDK v3 默认即 vhost，bucket 由 `GetObject/PutObject` 的 `Bucket` 参数参与签名与寻址。
 - 使用命令：`GetObject`、`PutObject`（不引入 presigner、不引入额外 AWS 包）。
@@ -159,6 +169,7 @@ export function toErrorMessage(...) { /* 原实现逐字保留 */ }
 ## 6. 一致性与并发
 
 - **单 Node 进程内串行**（实现，必需）：ObjectStore 内对每个集合维护一条 Promise 链（互斥），所有"读-改-写"入队执行，单进程内无竞态。
+  - **链任务必须内部 catch（实现必需防御）**：入队的每个读-改-写任务自身必须捕获 reject，不能让一次失败（含 5s 超时）冒泡成 Promise 链的 reject——否则链尾被污染、后续所有读写永挂。要求队头任务超时/失败后，队列仍能正常接收并执行下一个任务（失败仅作用于当次请求、经路由返回 500）。
 - **多实例/多进程不支持**（明确声明）：生产为单 systemd 实例（与现 SQLite 单写者约束相同）。object 模式下若同时跑第二个进程（手工/误启动），最后整体覆盖者获胜，可能丢更新——与"SQLite 多进程写"一样不在支持范围。
   - 不引入分布式锁、不引入 S3 条件写（`If-Match` ETag）重试逻辑：K2，单实例场景无必要。
   - 若将来确需多实例，再用条件写（PutObject `If-Match` 读时 ETag + 冲突重读重试）或独立锁，属独立事项。
@@ -168,8 +179,9 @@ export function toErrorMessage(...) { /* 原实现逐字保留 */ }
 
 - 新文件 `scripts/migrate-sql-to-object.mjs`（Node 原生运行）：
   1. 用 better-sqlite3 打开现 DB（路径取 `TREE_HOLE_DB_PATH`），全量读两表（无 LIMIT）；
-  2. 组装 §4.3 结构：`items` 为全量行（字段映射对齐 `toEntry/toMessage`），`nextId = max(id)+1`（空表为 1）；
-  3. PutObject 覆盖两个 key。
+  2. 先按 id 升序排序、**只保留最近 100 行**再组装 §4.3 的 `items`（字段映射对齐 `toEntry/toMessage`）；
+  3. **`nextId` 必须基于全量行的 `max(id)+1`**（即便旧行已被裁剪也不复用 id；空表为 1）；
+  4. PutObject 覆盖两个 key。
 - 执行流程（Gate 后，协调者/运维操作；本设计只给步骤）：
   1. 先在 OSS 控制台建好 bucket、创建仅授权该 bucket 读写对象的 RAM AK；
   2. 停机（`systemctl stop tree-hole`），跑迁移脚本（同时具备 SQL 路径与 OBJECT_* 环境变量）；
@@ -198,8 +210,10 @@ export function toErrorMessage(...) { /* 原实现逐字保留 */ }
 ### 8.3 object 模式 standalone 真机验收（Gate/上线阶段，不进默认 test）
 
 - 真机以 `STORAGE_TYPE=object` + 真实 OSS 变量启动 standalone：
+  - **真机首个请求探针（首请求必验项，不阻断部署准备）**：接流量前先用真实凭证做一次最小 GetObject（探测 key）/PutObject，验证 vhost 寻址 + SigV4 + 无 chunked 报错，并重点确认新版 SDK PutObject 默认的 `x-amz-checksum-*` 头是否被 OSS 接受（此项当前 [UNCERTAIN]）；通过后再接流量。
   - 走完密码门→留言→封存→管理员查看/删除，实际打通 OSS 读写（对象 key 在控制台可见、JSON 内容正确）；
   - 实测并记录：进程 RSS 增量（回答 §3 的 [UNCERTAIN]）、首请求延迟；
+  - **延迟上限（VM 实测目标，非预置结论）**：P95 `list` ≤500ms、`create` ≤1s；超时/连接失败 → reject → 路由现有 500 / UI 现有失败提示，不加缓存、不静默降级；
   - VM 出网前置检查：`curl https://s3.oss-<region>.aliyuncs.com` 可达（VM 当前经内网 NAT 出网，需确认到 OSS 公网 endpoint 的 443 放行；若 VM 走代理，AWS SDK 识别 `HTTPS_PROXY`，并注意 `NO_PROXY` 勿把本地链路误代理——此前本地 CDP 端口被代理出 502 的同类坑）。
 - 浏览器截图验收可复用 `acceptance/` 方式（独立事项，不在本设计强制）。
 
@@ -223,13 +237,18 @@ export function toErrorMessage(...) { /* 原实现逐字保留 */ }
 1. `npm run lint`、`npm run build` 退出 0；`npm test` 全绿（默认 sql 路径行为与 002be78 一致）。
 2. sql 模式：`tests/http` 端到端继续通过（SQLite 写库、登出清 cookie）。
 3. object 模式（真机）：standalone 实启，留言/封存/删除全链路经 OSS 成功；bucket 内两个 JSON key 内容与结构符合 §4.3；id 单调不复用、createdAt 为 UTC 规定格式。
-4. 迁移脚本：停机态从真实 SQLite 迁移后，object 列表与迁移前 SQL 列表一致（条目数与字段）。
+4. 迁移脚本：停机态从真实 SQLite 迁移后，object 列表与迁移前 SQL 列表端点返回结果一致（最近 100 条，字段一致）。
 5. 非法 `STORAGE_TYPE`、缺 OBJECT 配置：明确 500 报错，不静默回退。
 6. 工作区无 `.env*`、无 `data/` 入库；代码与日志不输出 AK/SK。
 
 ### 9.3 回滚
 
 - 代码/配置回滚：EnvironmentFile 去掉 `STORAGE_TYPE=object`（或改回 `sql`）+ `systemctl restart tree-hole` 即回到 SQLite；SQLite 文件在切换期间不被写、原样保留。
+  - **回滚的数据边界（管理者 2026-09-29 拍板，选 b：不提供反向回迁脚本）**：
+    - “SQLite 文件原样保留”只保证文件不损坏，**不保证回滚后数据完整**——object 运行期间新增的 entries/messages 只存在于 OSS，切回 sql 后看到的是切换前的旧数据、新增内容不在 SQLite（仍留在 OSS）。
+    - 因此该 env+restart 回滚**仅在“上线验证、object 尚未承载新数据”的窗口内是无损的**。
+    - 一旦 object 已正式承载新数据，回滚到 sql 视为**人工数据回迁操作**：只能带回每集合最近 100 条、>100 条历史永久不可恢复，需人工执行（本设计不提供回迁脚本，K2、当前无真实回迁需求）。
+    - 通用结论：>100 条之外的历史，在未来任何 object→sql 回迁中均永久不可恢复（对象布局本身不保留其外数据）。
 - OSS 侧对象可保留（不影响 sql 运行），确认不需要后在控制台删除；RAM AK 可禁用。
 - 分支未合并前的整体回滚：不合并 `feat/object-storage` 即可，develop/现网不受影响。
 
@@ -246,3 +265,4 @@ export function toErrorMessage(...) { /* 原实现逐字保留 */ }
 2. VM 到 OSS 公网 endpoint 的出网连通性/是否需配代理 → 部署前 curl 实测。
 3. 100–300 KB 对象在 VM 网络下 Get/Put 实际耗时 → 真机验收实测。
 4. mock 库 `aws-sdk-client-mock` 与 SDK 3.1142 的兼容性（版本匹配、ESM 导入）→ 安装时以实际可导入、测试可跑为准；若不兼容，降级为在测试内手写一个极小的 S3Client 传输桩（仅注入我们用到的 Get/Put 响应），并在回报中说明。
+]0;]0;]0;]0;]0;]0;
