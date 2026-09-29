@@ -13,6 +13,9 @@
 # testing
 /coverage
 
+# playwright MCP local debug artifacts
+.playwright-mcp/
+
 # next.js
 /.next/
 /.vinext/
@@ -39,7 +42,9 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
 /outputs/
 /work/
+graphify-out/
