@@ -228,7 +228,7 @@ export function toErrorMessage(...) { /* 原实现逐字保留 */ }
 
 修改：
 - `app/api/tree-hole-store.ts`（改为薄门面，类型转出）
-- `package.json` / `package-lock.json` / `pnpm-lock.yaml`（+`@aws-sdk/client-s3`；devDeps +`aws-sdk-client-mock`）
+- `package.json` / `package-lock.json`（+`@aws-sdk/client-s3`；devDeps +`aws-sdk-client-mock`）。本项目统一用 npm，不保留 pnpm-lock。
 
 不动：`tree-hole-auth.ts`、`page.tsx`、5 个路由、`layout.tsx`、`db/`（drizzle 脚手架仍不被产品引用，沿用现状）、nginx 配置。
 
