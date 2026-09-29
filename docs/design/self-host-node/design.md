@@ -110,6 +110,14 @@ export function getDb() {
 
 现有内容全部围绕 vinext/Cloudflare，改造后过时。最小重写：标准 Next 启动方式、必需环境变量（`TREE_HOLE_PASSWORD` / `TREE_HOLE_ADMIN_PASSWORD` / `TREE_HOLE_DB_PATH`）、`data/` 不入库、指向本设计文档。不保留 vinext/SIWC 脚手架段落（`chatgpt-auth.ts` 代码保留不动）。
 
+### 2.10 `app/api/tree-hole-auth.ts`（secure 改 false，4 行）
+
+- `setUnlockedCookie`、`setAdminUnlockedCookie` 两处，以及 `clearUnlockedCookie` 内两处，`secure: true` → `secure: false`，共 4 行。
+- set 两处原因：按 R3 2026-09-29 裁决走纯 HTTP，`secure: true` 会导致浏览器不保存 cookie、解锁失败。
+- clear 两处原因（RFC 6265）：删除 cookie 时其属性必须与设置时匹配；纯 HTTP 下若 clear 仍带 `secure: true`，浏览器不会删除这个非 secure cookie，`/api/logout` 登出会失效。故 clear 必须同为 `false`。
+- 其余鉴权逻辑一律不动。
+- 将来上 TLS 时，set 与 clear 共四处都要改回 `secure: true`。
+
 ## 3. 影响面
 
 - **运行时**：Cloudflare Workers 边缘运行时 → Node 22 上 `next start` / standalone server。
@@ -122,7 +130,7 @@ export function getDb() {
 
 - **R1 原生模块在 Ubuntu 的可用性**：spike 已证实 13.0.3 带 linux-x64 glibc prebuild，本机加载成功；Ubuntu 24.04 默认含 libstdc++6。残余风险：无（最终以 Gate/真机部署为准，本线不部署）。
 - **R2 standalone 是否含原生 .node（关键实测点）**：Next 的文件追踪可能漏 better-sqlite3。验收必须实际启动 `.next/standalone/server.js` 并打通一个写库请求；漏则按 2.5 加配置后重测，不接受"build 成功"单独作为结论。
-- **R3 secure cookie 与"先 HTTP 80"冲突（已裁决，2026-09-28）**：`tree-hole-auth.ts` 中两个 cookie 均 `secure: true`，纯 `http://` 下浏览器不保存 secure cookie，解锁必失败。协调者裁决：**鉴权代码不动，部署直接上 TLS**——nginx 层 openssl 自签证书（证书/私钥仅存 VM，不入库、不打印），内网 192.168.0.183 使用，浏览器一次性信任告警可接受；nginx 仅监听 443（可保留 80→443 跳转），反代到 Node standalone 端口走 http；将来有正式域名再换正规证书，属独立事项。
+- **R3 secure cookie 与"纯 HTTP 80"冲突（已裁决，2026-09-29；clear 路径同日补裁）**：`tree-hole-auth.ts` 中会话 cookie 的 set 与 clear 共四处原本均 `secure: true`。纯 `http://` 下浏览器不保存 secure cookie，set 带 `secure:true` 会令解锁失败；且按 RFC 6265 删除 cookie 的属性必须与设置时匹配，clear 若仍带 `secure:true`，浏览器不会删除非 secure cookie，`/api/logout` 登出会失效。管理者 2026-09-29 裁决：**纯 HTTP 部署、不上 TLS**——将 `setUnlockedCookie`、`setAdminUnlockedCookie` 两处及 `clearUnlockedCookie` 内两处全部改为 `secure: false`（共 4 行，见 §2.10）；nginx 仅监听 80 反代到 Node standalone（见 §6 第 4 步），浏览器直接访问 `http://192.168.0.183`，无 openssl/自签证书。将来上 TLS 时，set 与 clear 共四处都要改回 `secure: true`（独立事项）。
 - **R4 时间戳语义**：D1 与 SQLite 的 `CURRENT_TIMESTAMP` 均为 UTC、格式 `YYYY-MM-DD HH:MM:SS`，页面按本地时区 `Intl` 解析，行为一致。
 - **R5 id 语义**：SQLite `AUTOINCREMENT` 与 D1 同样保证删除后 id 不复用。
 - **R6 连接模型**：单 systemd 实例 = 单连接单例；默认 journal 模式对低并发小站足够，不引入 WAL 等额外配置（K2）。Next dev 热重载可能产生多连接，仅开发期现象，不处理。
@@ -136,6 +144,8 @@ export function getDb() {
 4. `npm test` 退出 0，含：静态断言、真实 SQLite 数据层 CRUD、HTTP 端到端全部原语义（密码门 HTML、401、HttpOnly cookie、留言/封存、管理员查看与删除）。
 5. 残留 grep：产品代码中 `cloudflare`、`vinext`、`wrangler`、`D1Database`、`TREE_HOLE_DB` 为 **0**（排除 `examples/`、lockfile、本文档）；examples 业务代码零改动。
 6. `git status` 中不出现 `data/` 或任何 `.env*`。
+7. `tree-hole-auth.ts` 中 `secure: false` 共 **4** 处（`setUnlockedCookie`、`setAdminUnlockedCookie` 各 1，`clearUnlockedCookie` 内 2）；`grep -rn "secure: true" app/` 输出为空，即全产品代码 `secure: true` 计数为 **0**。
+8. 解锁响应与登出响应的 `Set-Cookie` 均不含 `Secure` 属性：解锁（`/api/unlock`）由 `tests/http.test.mjs` 现有断言覆盖；登出（带会话 cookie POST `/api/logout`）由本文件新增断言覆盖（同样式）。
 
 ## 6. 部署步骤（供协调者 Gate 通过后执行；本 planner 不部署）
 
@@ -145,7 +155,7 @@ export function getDb() {
 3. systemd：新建 `tree-hole` 用户；`/etc/systemd/system/tree-hole.service`：
    `WorkingDirectory=/opt/tree-hole`、`ExecStart=/usr/bin/node server.js`、
    `EnvironmentFile=/etc/tree-hole/tree-hole.env`（0600，含 `TREE_HOLE_PASSWORD`/`TREE_HOLE_ADMIN_PASSWORD`/`TREE_HOLE_DB_PATH=/var/lib/tree-hole/tree-hole.db`，密码绝不入库）；`Restart=always`。
-4. nginx（按 R3 裁决，TLS）：在 VM 上用 openssl 生成自签证书（证书/私钥仅存 VM，如 `/etc/nginx/certs/`，权限 0600/0644，不入库、不打印）；nginx 仅监听 443 ssl，`proxy_pass http://127.0.0.1:3000`，带 `X-Forwarded-For/Proto/Host`（`X-Forwarded-Proto https`）；可保留 80→443 跳转。浏览器访问 `https://192.168.0.183` 一次性信任自签告警。将来有正式域名再换正规证书（独立事项）。
+4. nginx（按 R3 2026-09-29 裁决，纯 HTTP、不上 TLS）：nginx 只监听 80（`listen 80;`），`proxy_pass http://127.0.0.1:3000`，带 `X-Forwarded-For` 与 `Host`（如 `proxy_set_header Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`）；无 openssl、无证书、无 443、无 80→443 跳转。浏览器访问 `http://192.168.0.183`。将来上 TLS 时再增加证书与 443 监听，并把 §2.10 两处 cookie 改回 `secure: true`（独立事项）。
 5. 备份：每日 cron 对 DB 做 `sqlite3 <db> ".backup <dest>"`（安装 sqlite3）或冷拷贝到 `/var/backups/tree-hole/`，保留 7 份。
 6. 上线后实测：`systemctl status`、`free -h`、浏览器走完整解锁/留言/封存/管理员流程。
 

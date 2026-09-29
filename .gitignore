@@ -18,6 +18,9 @@
 /.vinext/
 /out/
 
+# sqlite database
+/data/
+
 # misc
 .DS_Store
 *.pem
