@@ -1,3 +1,7 @@
+import Database from "better-sqlite3";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 export type StoredEntry = {
   id: number;
   mood: string;
@@ -28,103 +32,88 @@ type MessageRow = {
   created_at: string;
 };
 
-declare global {
-  var TREE_HOLE_DB: D1Database | undefined;
-}
+let db: Database.Database | undefined;
 
 export async function ensureTables() {
-  const db = getDb();
-  await db.batch([
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS visitor_messages (
+  getDb().exec(
+    `CREATE TABLE IF NOT EXISTS visitor_messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nickname TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`,
-    ),
-    db.prepare(
-      `CREATE INDEX IF NOT EXISTS visitor_messages_created_at_idx
-       ON visitor_messages (created_at)`,
-    ),
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS tree_hole_entries (
+      );
+     CREATE INDEX IF NOT EXISTS visitor_messages_created_at_idx
+       ON visitor_messages (created_at);
+     CREATE TABLE IF NOT EXISTS tree_hole_entries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         mood TEXT NOT NULL,
         content TEXT NOT NULL,
         reply TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`,
-    ),
-    db.prepare(
-      `CREATE INDEX IF NOT EXISTS tree_hole_entries_created_at_idx
-       ON tree_hole_entries (created_at)`,
-    ),
-  ]);
+      );
+     CREATE INDEX IF NOT EXISTS tree_hole_entries_created_at_idx
+       ON tree_hole_entries (created_at);`,
+  );
 }
 
 export async function listMessages() {
   await ensureTables();
-  const { results } = await getDb()
+  const rows = getDb()
     .prepare(
       `SELECT id, nickname, content, created_at
        FROM visitor_messages
        ORDER BY id DESC
        LIMIT 100`,
     )
-    .all<MessageRow>();
-  return results.map(toMessage);
+    .all() as MessageRow[];
+  return rows.map(toMessage);
 }
 
 export async function createMessage(nickname: string, content: string) {
   await ensureTables();
-  await getDb()
+  getDb()
     .prepare(
       `INSERT INTO visitor_messages (nickname, content)
        VALUES (?, ?)`,
     )
-    .bind(nickname, content)
-    .run();
+    .run(nickname, content);
 }
 
 export async function deleteMessage(id: number) {
   await ensureTables();
-  await getDb()
+  getDb()
     .prepare("DELETE FROM visitor_messages WHERE id = ?")
-    .bind(id)
-    .run();
+    .run(id);
 }
 
 export async function listEntries() {
   await ensureTables();
-  const { results } = await getDb()
+  const rows = getDb()
     .prepare(
       `SELECT id, mood, content, reply, created_at
        FROM tree_hole_entries
        ORDER BY id DESC
        LIMIT 100`,
     )
-    .all<EntryRow>();
-  return results.map(toEntry);
+    .all() as EntryRow[];
+  return rows.map(toEntry);
 }
 
 export async function createEntry(mood: string, content: string, reply: string) {
   await ensureTables();
-  await getDb()
+  getDb()
     .prepare(
       `INSERT INTO tree_hole_entries (mood, content, reply)
        VALUES (?, ?, ?)`,
     )
-    .bind(mood, content, reply)
-    .run();
+    .run(mood, content, reply);
 }
 
 export async function deleteEntry(id: number) {
   await ensureTables();
-  await getDb()
+  getDb()
     .prepare("DELETE FROM tree_hole_entries WHERE id = ?")
-    .bind(id)
-    .run();
+    .run(id);
 }
 
 export function normalizeNickname(value: string | undefined) {
@@ -137,8 +126,11 @@ export function toErrorMessage(error: unknown) {
 }
 
 function getDb() {
-  const db = globalThis.TREE_HOLE_DB;
-  if (!db) throw new Error("D1 binding `DB` is unavailable.");
+  if (!db) {
+    const dbPath = process.env.TREE_HOLE_DB_PATH ?? "./data/tree-hole.db";
+    mkdirSync(dirname(dbPath), { recursive: true });
+    db = new Database(dbPath);
+  }
   return db;
 }
 

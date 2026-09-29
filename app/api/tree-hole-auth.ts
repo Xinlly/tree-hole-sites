@@ -49,7 +49,7 @@ export async function setUnlockedCookie(password: string) {
     maxAge: COOKIE_MAX_AGE,
     path: "/",
     sameSite: "lax",
-    secure: true,
+    secure: false,
   });
 }
 
@@ -60,7 +60,7 @@ export async function setAdminUnlockedCookie(password: string) {
     maxAge: COOKIE_MAX_AGE,
     path: "/",
     sameSite: "lax",
-    secure: true,
+    secure: false,
   });
 }
 
@@ -71,14 +71,14 @@ export async function clearUnlockedCookie() {
     maxAge: 0,
     path: "/",
     sameSite: "lax",
-    secure: true,
+    secure: false,
   });
   cookieStore.set(ADMIN_COOKIE_NAME, "", {
     httpOnly: true,
     maxAge: 0,
     path: "/",
     sameSite: "lax",
-    secure: true,
+    secure: false,
   });
 }
 
