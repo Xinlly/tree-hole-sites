@@ -492,10 +492,17 @@ async function readBody(body: unknown): Promise<string> {
     return new TextDecoder().decode(gunzipSync(Buffer.from(body, "binary")));
   }
   const stream = body as {
-    transformToString?: () => Promise<string>;
+    transformToByteArray?: () => Promise<Uint8Array>;
+    transformToString?: (encoding?: string) => Promise<string>;
   };
+  // gzip 是二进制：必须按字节读取。默认 transformToString() 按 utf-8 解码会破坏字节，
+  // 真机 AWS SDK 的 Body 是 SdkStream（非 Uint8Array），故优先 transformToByteArray。
+  if (typeof stream.transformToByteArray === "function") {
+    const bytes = await stream.transformToByteArray();
+    return new TextDecoder().decode(gunzipSync(Buffer.from(bytes)));
+  }
   if (typeof stream.transformToString === "function") {
-    const text = await stream.transformToString();
+    const text = await stream.transformToString("binary");
     return new TextDecoder().decode(gunzipSync(Buffer.from(text, "binary")));
   }
   throw new Error("Unsupported S3 object body");

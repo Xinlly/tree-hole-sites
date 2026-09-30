@@ -763,6 +763,37 @@ test("orphan block before a real older block: deep pages keep all 41 ids incl ol
   assert.deepEqual(collected.map((item) => item.content), expected);
 });
 
+// 真机 AWS SDK 的 GetObject Body 是 SdkStream（非 Uint8Array）。
+// 旧代码用 transformToString()（默认 utf-8）解码 gzip 字节，真机报 incorrect header check。
+// 本测试把 GetObject 返回包成 SdkStream 形态，钉住二进制按字节读取。
+test("real S3 SdkStream body (transformToByteArray) is gunzipped correctly", async () => {
+  const sdkStreamBucket = setupBackend();
+  const store = await makeStore("sdkstream");
+  await store.ensureInitialized();
+  await addMessages(store, 3);
+
+  // 覆写 GetObject：把 Buffer 包成只暴露 SdkStream 方法的对象（不是 Uint8Array）
+  s3Mock.on(GetObjectCommand).callsFake(async (input) => {
+    const bytes = sdkStreamBucket.get(input.Key);
+    if (!bytes) {
+      const error = new Error("The specified key does not exist.");
+      error.name = "NoSuchKey";
+      throw error;
+    }
+    return {
+      Body: {
+        transformToByteArray: async () => bytes,
+        transformToString: async () => new TextDecoder().decode(bytes), // 默认 utf8，若被走会坏
+      },
+    };
+  });
+
+  const page = await store.listMessages({ limit: 20 });
+  assert.equal(page.items.length, 3);
+  assert.equal(page.items[0].content, "留言3");
+  assert.equal(page.items[2].content, "留言1");
+});
+
 // ---- helpers ----
 async function inflateGet(bucket, key) {
   const { gunzipSync } = await import("node:zlib");
