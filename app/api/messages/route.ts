@@ -2,12 +2,17 @@ import {
   createMessage,
   listMessages,
   normalizeNickname,
+  parseListQuery,
   toErrorMessage,
 } from "../tree-hole-store";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return Response.json({ messages: await listMessages() });
+    const { options, error } = parseListQuery(new URL(request.url));
+    if (error) {
+      return Response.json({ error }, { status: 400 });
+    }
+    return Response.json(await listMessages(options));
   } catch (error) {
     return Response.json({ error: toErrorMessage(error) }, { status: 500 });
   }

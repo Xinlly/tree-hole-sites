@@ -17,29 +17,29 @@ test("messages: create, list and delete through real SQLite", async () => {
   await store.createMessage("阿珍", "把秘密放进树洞");
 
   const messages = await store.listMessages();
-  assert.equal(messages.length, 2);
-  assert.equal(messages[0].nickname, "阿珍");
-  assert.equal(messages[0].content, "把秘密放进树洞");
-  assert.ok(messages[0].createdAt);
-  assert.equal(messages[1].nickname, "小明");
+  assert.equal(messages.items.length, 2);
+  assert.equal(messages.items[0].nickname, "阿珍");
+  assert.equal(messages.items[0].content, "把秘密放进树洞");
+  assert.ok(messages.items[0].createdAt);
+  assert.equal(messages.items[1].nickname, "小明");
 
-  await store.deleteMessage(messages[0].id);
+  await store.deleteMessage(messages.items[0].id);
   const remaining = await store.listMessages();
-  assert.equal(remaining.length, 1);
-  assert.equal(remaining[0].nickname, "小明");
+  assert.equal(remaining.items.length, 1);
+  assert.equal(remaining.items[0].nickname, "小明");
 });
 
 test("entries: create keeps reply and Chinese text, delete removes row", async () => {
   await store.createEntry("开心", "考上了理想的学校", "为你高兴");
   const entries = await store.listEntries();
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].mood, "开心");
-  assert.equal(entries[0].content, "考上了理想的学校");
-  assert.equal(entries[0].reply, "为你高兴");
-  assert.ok(entries[0].createdAt);
+  assert.equal(entries.items.length, 1);
+  assert.equal(entries.items[0].mood, "开心");
+  assert.equal(entries.items[0].content, "考上了理想的学校");
+  assert.equal(entries.items[0].reply, "为你高兴");
+  assert.ok(entries.items[0].createdAt);
 
-  await store.deleteEntry(entries[0].id);
-  assert.deepEqual(await store.listEntries(), []);
+  await store.deleteEntry(entries.items[0].id);
+  assert.deepEqual((await store.listEntries()).items, []);
 });
 
 test("normalizeNickname trims, caps length and falls back to 匿名", () => {

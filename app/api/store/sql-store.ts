@@ -1,7 +1,14 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Store, StoredEntry, StoredMessage } from "./types.ts";
+import { encodeCursor } from "./cursor.ts";
+import type {
+  ListOptions,
+  Page,
+  Store,
+  StoredEntry,
+  StoredMessage,
+} from "./types.ts";
 
 type EntryRow = {
   id: number;
@@ -43,17 +50,14 @@ export class SqlStore implements Store {
     );
   }
 
-  async listMessages() {
+  async listMessages(options: ListOptions): Promise<Page<StoredMessage>> {
     await this.ensureInitialized();
-    const rows = this.getDb()
-      .prepare(
-        `SELECT id, nickname, content, created_at
-       FROM visitor_messages
-       ORDER BY id DESC
-       LIMIT 100`,
-      )
-      .all() as MessageRow[];
-    return rows.map(toMessage);
+    const rows = this.select<MessageRow>(
+      "visitor_messages",
+      "id, nickname, content, created_at",
+      options,
+    );
+    return this.toPage(rows, options.limit, toMessage);
   }
 
   async createMessage(nickname: string, content: string) {
@@ -66,24 +70,21 @@ export class SqlStore implements Store {
       .run(nickname, content);
   }
 
-  async deleteMessage(id: number) {
+  async deleteMessage(id: string) {
     await this.ensureInitialized();
     this.getDb()
       .prepare("DELETE FROM visitor_messages WHERE id = ?")
-      .run(id);
+      .run(Number(id));
   }
 
-  async listEntries() {
+  async listEntries(options: ListOptions): Promise<Page<StoredEntry>> {
     await this.ensureInitialized();
-    const rows = this.getDb()
-      .prepare(
-        `SELECT id, mood, content, reply, created_at
-       FROM tree_hole_entries
-       ORDER BY id DESC
-       LIMIT 100`,
-      )
-      .all() as EntryRow[];
-    return rows.map(toEntry);
+    const rows = this.select<EntryRow>(
+      "tree_hole_entries",
+      "id, mood, content, reply, created_at",
+      options,
+    );
+    return this.toPage(rows, options.limit, toEntry);
   }
 
   async createEntry(mood: string, content: string, reply: string) {
@@ -96,11 +97,50 @@ export class SqlStore implements Store {
       .run(mood, content, reply);
   }
 
-  async deleteEntry(id: number) {
+  async deleteEntry(id: string) {
     await this.ensureInitialized();
     this.getDb()
       .prepare("DELETE FROM tree_hole_entries WHERE id = ?")
-      .run(id);
+      .run(Number(id));
+  }
+
+  private select<R extends { id: number }>(
+    table: string,
+    columns: string,
+    options: ListOptions,
+  ): R[] {
+    const limit = options.limit + 1;
+    if (options.afterId) {
+      return this.getDb()
+        .prepare(
+          `SELECT ${columns} FROM ${table}
+       WHERE id < ?
+       ORDER BY id DESC
+       LIMIT ?`,
+        )
+        .all(Number(options.afterId), limit) as R[];
+    }
+    return this.getDb()
+      .prepare(
+        `SELECT ${columns} FROM ${table}
+       ORDER BY id DESC
+       LIMIT ?`,
+      )
+      .all(limit) as R[];
+  }
+
+  private toPage<R extends { id: number }, T extends { id: string }>(
+    rows: R[],
+    limit: number,
+    mapper: (row: R) => T,
+  ): Page<T> {
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map(mapper);
+    const last = pageRows[pageRows.length - 1];
+    const nextCursor =
+      hasMore && last ? encodeCursor({ afterId: String(last.id) }) : null;
+    return { items, nextCursor, hasMore };
   }
 
   private getDb() {
@@ -115,7 +155,7 @@ export class SqlStore implements Store {
 
 function toEntry(row: EntryRow): StoredEntry {
   return {
-    id: row.id,
+    id: String(row.id),
     mood: row.mood,
     content: row.content,
     reply: row.reply,
@@ -125,7 +165,7 @@ function toEntry(row: EntryRow): StoredEntry {
 
 function toMessage(row: MessageRow): StoredMessage {
   return {
-    id: row.id,
+    id: String(row.id),
     nickname: row.nickname,
     content: row.content,
     createdAt: row.created_at,

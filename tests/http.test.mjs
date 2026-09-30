@@ -91,14 +91,14 @@ test("standalone server: auth gate, writing and admin cleanup", async () => {
   const messageList = await (
     await fetch(`${baseUrl}/api/messages`, { headers: { cookie: sessionCookie } })
   ).json();
-  assert.equal(messageList.messages[0].nickname, "树洞居民");
-  assert.equal(messageList.messages[0].content, "今天天气真好");
+  assert.equal(messageList.items[0].nickname, "树洞居民");
+  assert.equal(messageList.items[0].content, "今天天气真好");
 
   const entryList = await (
     await fetch(`${baseUrl}/api/entries`, { headers: { cookie: sessionCookie } })
   ).json();
-  assert.equal(entryList.entries[0].mood, "平静");
-  assert.equal(entryList.entries[0].content, "把心事封存起来");
+  assert.equal(entryList.items[0].mood, "平静");
+  assert.equal(entryList.items[0].content, "把心事封存起来");
 
   const adminWrong = await login("/api/admin/unlock", "open-sesame");
   assert.equal(adminWrong.status, 401);
