@@ -1,10 +1,18 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  Fragment,
+  ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 type StoredEntry = {
-  id: number;
+  id: string;
   mood: string;
   content: string;
   reply: string;
@@ -12,7 +20,7 @@ type StoredEntry = {
 };
 
 type StoredMessage = {
-  id: number;
+  id: string;
   nickname: string;
   content: string;
   createdAt: string;
@@ -143,8 +151,6 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
   const [note, setNote] = useState("");
   const [nickname, setNickname] = useState("");
   const [mood, setMood] = useState(moods[0].label);
-  const [messages, setMessages] = useState<StoredMessage[]>([]);
-  const [recentEntries, setRecentEntries] = useState<StoredEntry[]>([]);
   const [sealed, setSealed] = useState<StoredEntry | null>(null);
   const [messageStatus, setMessageStatus] = useState("");
   const [entryStatus, setEntryStatus] = useState("");
@@ -153,32 +159,15 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
   const [adminStatus, setAdminStatus] = useState("");
   const [adminEntries, setAdminEntries] = useState<StoredEntry[]>([]);
   const [adminMessages, setAdminMessages] = useState<StoredMessage[]>([]);
-
-  useEffect(() => {
-    loadPublicLists();
-  }, []);
+  const [publicRefreshKey, setPublicRefreshKey] = useState(0);
 
   const selectedMood = useMemo(
     () => moods.find((item) => item.label === mood) ?? moods[0],
     [mood],
   );
 
-  async function loadPublicLists() {
-    await Promise.all([loadMessages(), loadRecentEntries()]);
-  }
-
-  async function loadMessages() {
-    const response = await fetch("/api/messages").catch(() => null);
-    if (!response?.ok) return;
-    const body = (await response.json()) as { messages: StoredMessage[] };
-    setMessages(body.messages);
-  }
-
-  async function loadRecentEntries() {
-    const response = await fetch("/api/entries").catch(() => null);
-    if (!response?.ok) return;
-    const body = (await response.json()) as { entries: StoredEntry[] };
-    setRecentEntries(body.entries);
+  function refreshPublicLists() {
+    setPublicRefreshKey((value) => value + 1);
   }
 
   async function sealEntry() {
@@ -198,17 +187,16 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
       return;
     }
 
-    const entry: StoredEntry = {
-      id: Date.now(),
+    setSealed({
+      id: "",
       mood,
       content: trimmed,
       reply,
       createdAt: new Date().toISOString(),
-    };
-    setSealed(entry);
+    });
     setText("");
     setEntryStatus("已封存到服务器。");
-    await loadRecentEntries();
+    refreshPublicLists();
     if (adminUnlocked) await loadAdminItems();
   }
 
@@ -233,7 +221,7 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
 
     setNote("");
     setMessageStatus("已保存到服务器。");
-    await loadMessages();
+    refreshPublicLists();
     if (adminUnlocked) await loadAdminItems();
   }
 
@@ -267,7 +255,7 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
     setAdminMessages(body.messages);
   }
 
-  async function deleteAdminItem(type: "entries" | "messages", id: number) {
+  async function deleteAdminItem(type: "entries" | "messages", id: string) {
     const response = await fetch(`/api/admin/${type}/${id}`, {
       method: "DELETE",
     }).catch(() => null);
@@ -276,7 +264,8 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
       return;
     }
     setAdminStatus("已删除。");
-    await Promise.all([loadAdminItems(), loadPublicLists()]);
+    await loadAdminItems();
+    refreshPublicLists();
   }
 
   return (
@@ -426,16 +415,42 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
                 />
               </div>
 
-              <PublicList
+              <InfiniteList<StoredEntry>
                 emptyText="还没有服务器封存。"
-                entries={recentEntries}
+                endpoint="entries"
+                refreshKey={publicRefreshKey}
                 title="最近封存"
-              />
-              <PublicList
+              >
+                {(entry) => (
+                  <article
+                    className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
+                      <span>{entry.mood}</span>
+                      <time>{formatDate(entry.createdAt)}</time>
+                    </div>
+                    <p className="line-clamp-3 leading-7">{entry.content}</p>
+                  </article>
+                )}
+              </InfiniteList>
+              <InfiniteList<StoredMessage>
                 emptyText="还没有留言。"
-                messages={messages}
+                endpoint="messages"
+                refreshKey={publicRefreshKey}
                 title="留给我的话"
-              />
+              >
+                {(message) => (
+                  <article
+                    className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
+                      <span>{message.nickname}</span>
+                      <time>{formatDate(message.createdAt)}</time>
+                    </div>
+                    <p className="line-clamp-4 leading-7">{message.content}</p>
+                  </article>
+                )}
+              </InfiniteList>
             </aside>
           </div>
 
@@ -480,52 +495,230 @@ function PanelTitle({
   );
 }
 
-function PublicList({
+type PageBody<T> = {
+  items: T[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
+const PAGE_LIMIT = 20;
+
+// cursor 游标分页的无限滚动列表：IntersectionObserver 触发加载，
+// 预加载下一页；已加载项按 id 缓存去重。
+function InfiniteList<T extends { id: string }>({
+  children,
   emptyText,
-  entries,
-  messages,
+  endpoint,
+  refreshKey,
   title,
 }: {
+  children: (item: T) => ReactNode;
   emptyText: string;
-  entries?: StoredEntry[];
-  messages?: StoredMessage[];
+  endpoint: string;
+  refreshKey: number;
   title: string;
 }) {
-  const items = entries ?? messages ?? [];
+  const [retryKey, setRetryKey] = useState(0);
+  return (
+    <InfiniteListImpl<T>
+      emptyText={emptyText}
+      endpoint={endpoint}
+      key={`${refreshKey}:${retryKey}`}
+      onRetry={() => setRetryKey((value) => value + 1)}
+      title={title}
+    >
+      {children}
+    </InfiniteListImpl>
+  );
+}
+
+function InfiniteListImpl<T extends { id: string }>({
+  children,
+  emptyText,
+  endpoint,
+  onRetry,
+  title,
+}: {
+  children: (item: T) => ReactNode;
+  emptyText: string;
+  endpoint: string;
+  onRetry: () => void;
+  title: string;
+}) {
+  const cacheRef = useRef(new Map<string, T>());
+  const [items, setItems] = useState<T[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState("");
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const loadingMoreRef = useRef(false);
+  const prefetchRef = useRef<{
+    cursor: string;
+    promise: Promise<PageBody<T>>;
+  } | null>(null);
+
+  const buildUrl = (cursorValue: string | null) =>
+    `/api/${endpoint}?limit=${PAGE_LIMIT}${
+      cursorValue ? `&cursor=${encodeURIComponent(cursorValue)}` : ""
+    }`;
+
+  const fetchPage = (cursorValue: string | null) =>
+    fetch(buildUrl(cursorValue)).then(async (response) => {
+      if (!response.ok) {
+        throw new Error("request failed");
+      }
+      return (await response.json()) as PageBody<T>;
+    });
+
+  const applyPage = (page: PageBody<T>) => {
+    const cache = cacheRef.current;
+    const fresh = page.items.filter((item) => !cache.has(item.id));
+    for (const item of fresh) {
+      cache.set(item.id, item);
+    }
+    setItems((prev) => {
+      const next = [...prev];
+      for (const item of fresh) {
+        if (!next.some((existing) => existing.id === item.id)) {
+          next.push(item);
+        }
+      }
+      return next;
+    });
+    setHasMore(page.hasMore);
+    setCursor(page.hasMore ? page.nextCursor : null);
+    if (page.hasMore && page.nextCursor) {
+      prefetchRef.current = {
+        cursor: page.nextCursor,
+        promise: fetchPage(page.nextCursor),
+      };
+    }
+  };
+
+  // 首次加载：挂载即拉首页（刷新/重试由外层 key 重挂触发）
+  useEffect(() => {
+    let cancelled = false;
+    fetchPage(null)
+      .then((page) => {
+        if (cancelled) return;
+        applyPage(page);
+        setInitialLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setError("加载失败，请稍后再试。");
+        setInitialLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadMore = () => {
+    if (loadingMoreRef.current || initialLoading || !hasMore) {
+      return;
+    }
+    const key = cursor;
+    if (!key) {
+      return;
+    }
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    setError("");
+    const prefetched = prefetchRef.current;
+    const pagePromise =
+      prefetched && prefetched.cursor === key
+        ? prefetched.promise
+        : fetchPage(key);
+    if (prefetched && prefetched.cursor === key) {
+      prefetchRef.current = null;
+    }
+    pagePromise
+      .then((page) => {
+        applyPage(page);
+      })
+      .catch(() => {
+        prefetchRef.current = null;
+        setError("加载失败，请稍后再试。");
+      })
+      .finally(() => {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      });
+  };
+  const loadMoreRef = useRef(loadMore);
+  useEffect(() => {
+    loadMoreRef.current = loadMore;
+  });
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) {
+      return;
+    }
+    const observer = new IntersectionObserver((observerEntries) => {
+      if (observerEntries[0]?.isIntersecting) {
+        loadMoreRef.current();
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <section className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/82 p-5 text-[#5d5868]">
       <h2 className="text-xl font-semibold text-[#756a8a]">{title}</h2>
       <div className="mt-4 space-y-3">
-        {items.length === 0 ? (
+        {initialLoading ? (
+          <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-sm text-[#7b7481]">
+            正在加载...
+          </p>
+        ) : error && items.length === 0 ? (
+          <div className="rounded-lg bg-[#f5dce2] p-4 text-sm text-[#965c6d]">
+            <p>{error}</p>
+            <button
+              className="mt-2 rounded-lg border border-[#efc8d2] px-3 py-1.5 text-[#9c5f72] transition hover:bg-[#fdeff3]"
+              onClick={onRetry}
+              type="button"
+            >
+              重试
+            </button>
+          </div>
+        ) : items.length === 0 ? (
           <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-sm text-[#7b7481]">
             {emptyText}
           </p>
-        ) : entries ? (
-          entries.map((entry) => (
-            <article
-              className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4"
-              key={entry.id}
-            >
-              <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
-                <span>{entry.mood}</span>
-                <time>{formatDate(entry.createdAt)}</time>
-              </div>
-              <p className="line-clamp-3 leading-7">{entry.content}</p>
-            </article>
-          ))
         ) : (
-          messages?.map((message) => (
-            <article
-              className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4"
-              key={message.id}
-            >
-              <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
-                <span>{message.nickname}</span>
-                <time>{formatDate(message.createdAt)}</time>
+          <>
+            {items.map((item) => (
+              <Fragment key={item.id}>{children(item)}</Fragment>
+            ))}
+            {error ? (
+              <div className="rounded-lg bg-[#f5dce2] p-4 text-sm text-[#965c6d]">
+                <p>{error}</p>
+                <button
+                  className="mt-2 rounded-lg border border-[#efc8d2] px-3 py-1.5 text-[#9c5f72] transition hover:bg-[#fdeff3]"
+                  onClick={loadMore}
+                  type="button"
+                >
+                  重试
+                </button>
               </div>
-              <p className="line-clamp-4 leading-7">{message.content}</p>
-            </article>
-          ))
+            ) : hasMore ? (
+              <div ref={sentinelRef}>
+                {loadingMore ? (
+                  <p className="p-2 text-center text-sm text-[#7b7481]">
+                    正在加载...
+                  </p>
+                ) : (
+                  <div className="h-1" />
+                )}
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </section>
@@ -547,7 +740,7 @@ function AdminPanel({
   adminPassword: string;
   adminStatus: string;
   adminUnlocked: boolean;
-  onDelete: (type: "entries" | "messages", id: number) => void;
+  onDelete: (type: "entries" | "messages", id: string) => void;
   onPasswordChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
@@ -603,7 +796,7 @@ function AdminList({
   type,
 }: {
   items: Array<StoredEntry | StoredMessage>;
-  onDelete: (id: number) => void;
+  onDelete: (id: string) => void;
   title: string;
   type: "entry" | "message";
 }) {

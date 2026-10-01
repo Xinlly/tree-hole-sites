@@ -1,130 +1,113 @@
-export type StoredEntry = {
-  id: number;
-  mood: string;
-  content: string;
-  reply: string;
-  createdAt: string;
-};
+import { getStore } from "./store/index.ts";
+import { decodeCursor } from "./store/cursor.ts";
+import type {
+  ListOptions,
+  StoredEntry,
+  StoredMessage,
+} from "./store/types.ts";
 
-export type StoredMessage = {
-  id: number;
-  nickname: string;
-  content: string;
-  createdAt: string;
-};
+export type { StoredEntry, StoredMessage };
 
-type EntryRow = {
-  id: number;
-  mood: string;
-  content: string;
-  reply: string;
-  created_at: string;
-};
-
-type MessageRow = {
-  id: number;
-  nickname: string;
-  content: string;
-  created_at: string;
-};
-
-declare global {
-  var TREE_HOLE_DB: D1Database | undefined;
-}
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 50;
+const ADMIN_LIMIT = 100;
 
 export async function ensureTables() {
-  const db = getDb();
-  await db.batch([
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS visitor_messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nickname TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`,
-    ),
-    db.prepare(
-      `CREATE INDEX IF NOT EXISTS visitor_messages_created_at_idx
-       ON visitor_messages (created_at)`,
-    ),
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS tree_hole_entries (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        mood TEXT NOT NULL,
-        content TEXT NOT NULL,
-        reply TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`,
-    ),
-    db.prepare(
-      `CREATE INDEX IF NOT EXISTS tree_hole_entries_created_at_idx
-       ON tree_hole_entries (created_at)`,
-    ),
-  ]);
+  await getStore().ensureInitialized();
 }
 
-export async function listMessages() {
-  await ensureTables();
-  const { results } = await getDb()
-    .prepare(
-      `SELECT id, nickname, content, created_at
-       FROM visitor_messages
-       ORDER BY id DESC
-       LIMIT 100`,
-    )
-    .all<MessageRow>();
-  return results.map(toMessage);
+export async function listMessages(options?: Partial<ListOptions>) {
+  return getStore().listMessages(withLimit(options));
+}
+
+export async function listEntries(options?: Partial<ListOptions>) {
+  return getStore().listEntries(withLimit(options));
 }
 
 export async function createMessage(nickname: string, content: string) {
-  await ensureTables();
-  await getDb()
-    .prepare(
-      `INSERT INTO visitor_messages (nickname, content)
-       VALUES (?, ?)`,
-    )
-    .bind(nickname, content)
-    .run();
+  await getStore().createMessage(nickname, content);
 }
 
-export async function deleteMessage(id: number) {
-  await ensureTables();
-  await getDb()
-    .prepare("DELETE FROM visitor_messages WHERE id = ?")
-    .bind(id)
-    .run();
-}
-
-export async function listEntries() {
-  await ensureTables();
-  const { results } = await getDb()
-    .prepare(
-      `SELECT id, mood, content, reply, created_at
-       FROM tree_hole_entries
-       ORDER BY id DESC
-       LIMIT 100`,
-    )
-    .all<EntryRow>();
-  return results.map(toEntry);
+export async function deleteMessage(id: string) {
+  await getStore().deleteMessage(id);
 }
 
 export async function createEntry(mood: string, content: string, reply: string) {
-  await ensureTables();
-  await getDb()
-    .prepare(
-      `INSERT INTO tree_hole_entries (mood, content, reply)
-       VALUES (?, ?, ?)`,
-    )
-    .bind(mood, content, reply)
-    .run();
+  await getStore().createEntry(mood, content, reply);
 }
 
-export async function deleteEntry(id: number) {
-  await ensureTables();
-  await getDb()
-    .prepare("DELETE FROM tree_hole_entries WHERE id = ?")
-    .bind(id)
-    .run();
+export async function deleteEntry(id: string) {
+  await getStore().deleteEntry(id);
+}
+
+// 管理员需要全量：按游标翻页直到收完
+export async function listAllEntries() {
+  return collectAll(listEntries);
+}
+
+export async function listAllMessages() {
+  return collectAll(listMessages);
+}
+
+async function collectAll<T>(
+  list: (options: Partial<ListOptions>) => Promise<{
+    items: T[];
+    nextCursor: string | null;
+    hasMore: boolean;
+  }>,
+): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const options: Partial<ListOptions> = { limit: ADMIN_LIMIT };
+    if (cursor) {
+      Object.assign(options, decodeCursor(cursor));
+    }
+    const page = await list(options);
+    items.push(...page.items);
+    cursor = page.hasMore ? page.nextCursor : null;
+  } while (cursor);
+  return items;
+}
+
+function withLimit(options?: Partial<ListOptions>): ListOptions {
+  return {
+    afterId: options?.afterId,
+    blockKey: options?.blockKey,
+    index: options?.index,
+    limit: options?.limit ?? DEFAULT_LIMIT,
+  };
+}
+
+// 解析 GET 的 cursor/limit 查询参数；畸形返回 error（路由转 400）
+export function parseListQuery(url: URL): {
+  options?: Partial<ListOptions>;
+  error?: string;
+} {
+  const options: Partial<ListOptions> = {};
+  const limitParam = url.searchParams.get("limit");
+  if (limitParam !== null) {
+    if (!/^\d+$/.test(limitParam)) {
+      return { error: "invalid limit" };
+    }
+    const limit = Number(limitParam);
+    if (limit < 1 || limit > MAX_LIMIT) {
+      return { error: "invalid limit" };
+    }
+    options.limit = limit;
+  }
+  const cursorParam = url.searchParams.get("cursor");
+  if (cursorParam !== null) {
+    try {
+      const decoded = decodeCursor(cursorParam);
+      options.afterId = decoded.afterId;
+      options.blockKey = decoded.blockKey;
+      options.index = decoded.index;
+    } catch {
+      return { error: "invalid cursor" };
+    }
+  }
+  return { options };
 }
 
 export function normalizeNickname(value: string | undefined) {
@@ -134,29 +117,4 @@ export function normalizeNickname(value: string | undefined) {
 
 export function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
-}
-
-function getDb() {
-  const db = globalThis.TREE_HOLE_DB;
-  if (!db) throw new Error("D1 binding `DB` is unavailable.");
-  return db;
-}
-
-function toEntry(row: EntryRow): StoredEntry {
-  return {
-    id: row.id,
-    mood: row.mood,
-    content: row.content,
-    reply: row.reply,
-    createdAt: row.created_at,
-  };
-}
-
-function toMessage(row: MessageRow): StoredMessage {
-  return {
-    id: row.id,
-    nickname: row.nickname,
-    content: row.content,
-    createdAt: row.created_at,
-  };
 }

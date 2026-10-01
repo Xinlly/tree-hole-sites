@@ -1,8 +1,17 @@
-import { createEntry, listEntries, toErrorMessage } from "../tree-hole-store";
+import {
+  createEntry,
+  listEntries,
+  parseListQuery,
+  toErrorMessage,
+} from "../tree-hole-store";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    return Response.json({ entries: await listEntries() });
+    const { options, error } = parseListQuery(new URL(request.url));
+    if (error) {
+      return Response.json({ error }, { status: 400 });
+    }
+    return Response.json(await listEntries(options));
   } catch (error) {
     return Response.json({ error: toErrorMessage(error) }, { status: 500 });
   }

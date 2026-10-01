@@ -11,7 +11,7 @@ export async function DELETE(
 
   try {
     const { id } = await params;
-    await deleteMessage(Number(id));
+    await deleteMessage(id);
     return Response.json({ ok: true });
   } catch (error) {
     return Response.json({ error: toErrorMessage(error) }, { status: 500 });

@@ -13,10 +13,16 @@
 # testing
 /coverage
 
+# playwright MCP local debug artifacts
+.playwright-mcp/
+
 # next.js
 /.next/
 /.vinext/
 /out/
+
+# sqlite database
+/data/
 
 # misc
 .DS_Store
@@ -36,7 +42,9 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
 /outputs/
 /work/
+graphify-out/
