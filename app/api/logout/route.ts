@@ -1,6 +1,6 @@
-import { clearUnlockedCookie } from "../tree-hole-auth";
+import { clearAllCookies } from "../tree-hole-auth";
 
 export async function POST() {
-  await clearUnlockedCookie();
+  await clearAllCookies();
   return Response.json({ ok: true });
 }

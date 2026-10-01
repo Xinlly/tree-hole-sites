@@ -18,6 +18,8 @@ process.env.STORAGE_OBJECT_SECRET_ACCESS_KEY = "test-secret-key";
 
 const s3Mock = mockClient(S3Client);
 
+const PUBLIC_SCOPE = { kind: "public", id: "" };
+
 // 内存中的假桶：Put 写入、Get 读出，缺 key 抛 NoSuchKey；
 // ListObjectsV2 按 Prefix/StartAfter 字典序升序返回
 function setupBackend() {
@@ -60,7 +62,7 @@ async function makeStore(tag) {
 async function addMessages(store, count, prefix = "留言") {
   for (let i = 0; i < count; i += 1) {
     // 逐条加微小间隔，避免同毫秒，便于断言顺序稳定
-    await store.createMessage("用户", `${prefix}${i + 1}`);
+    await store.createMessage(PUBLIC_SCOPE, "用户", `${prefix}${i + 1}`);
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
 }
@@ -71,10 +73,10 @@ test("F2: at 20 the newest are sealed into one immutable block and active clears
   await store.ensureInitialized();
   await addMessages(store, 20);
 
-  const state = JSON.parse(await inflateGet(bucket, "v2/messages/state.json.gz"));
+  const state = JSON.parse(await inflateGet(bucket, "v3/public/messages/state.json.gz"));
   assert.equal(state.active.length, 0);
   assert.equal(typeof state.headBlockKey, "string");
-  assert.match(state.headBlockKey, /^v2\/messages\/blocks\/.+\.json\.gz$/);
+  assert.match(state.headBlockKey, /^v3\/public\/messages\/blocks\/.+\.json\.gz$/);
 
   const block = JSON.parse(await inflateGet(bucket, state.headBlockKey));
   assert.equal(block.items.length, 20);
@@ -83,7 +85,7 @@ test("F2: at 20 the newest are sealed into one immutable block and active clears
   assert.equal(block.items[0].content, "留言20");
   assert.equal(block.items[19].content, "留言1");
 
-  const all = await store.listMessages({ limit: 50 });
+  const all = await store.listMessages(PUBLIC_SCOPE, { limit: 50 });
   assert.equal(all.items.length, 20);
   assert.equal(all.hasMore, false);
   assert.equal(all.items[0].content, "留言20");
@@ -95,9 +97,9 @@ test("F3: active 1 + block 20, first screen of 20 spans the boundary with no dup
   const store = await makeStore("f3");
   await store.ensureInitialized();
   await addMessages(store, 20);
-  await store.createMessage("新人", "最新的一条");
+  await store.createMessage(PUBLIC_SCOPE, "新人", "最新的一条");
 
-  const page = await store.listMessages({ limit: 20 });
+  const page = await store.listMessages(PUBLIC_SCOPE, { limit: 20 });
   assert.equal(page.items.length, 20);
   assert.equal(page.items[0].content, "最新的一条");
   assert.equal(page.items[1].content, "留言20");
@@ -109,7 +111,7 @@ test("F3: active 1 + block 20, first screen of 20 spans the boundary with no dup
   assert.equal(new Set(ids).size, 20);
 
   const lastId = page.items[19].id;
-  const next = await store.listMessages({ limit: 20, afterId: lastId });
+  const next = await store.listMessages(PUBLIC_SCOPE, { limit: 20, afterId: lastId });
   assert.equal(next.items.length, 1);
   assert.equal(next.items[0].content, "留言1");
   assert.equal(next.hasMore, false);
@@ -120,25 +122,25 @@ test("F4: delete in active removes; delete in block adds tombstone and leaves bl
   const store = await makeStore("f4");
   await store.ensureInitialized();
   await addMessages(store, 20);
-  await store.createMessage("新人", "活动区这条");
+  await store.createMessage(PUBLIC_SCOPE, "新人", "活动区这条");
 
   // active 删除
-  const before = await store.listMessages({ limit: 21 });
+  const before = await store.listMessages(PUBLIC_SCOPE, { limit: 21 });
   const activeId = before.items[0].id;
-  await store.deleteMessage(activeId);
-  let listed = await store.listMessages({ limit: 21 });
+  await store.deleteMessage(PUBLIC_SCOPE, activeId);
+  let listed = await store.listMessages(PUBLIC_SCOPE, { limit: 21 });
   assert.ok(!listed.items.some((item) => item.id === activeId));
   assert.equal(listed.items[0].content, "留言20");
 
   // 块内删除：记录块字节
-  const state = JSON.parse(await inflateGet(bucket, "v2/messages/state.json.gz"));
+  const state = JSON.parse(await inflateGet(bucket, "v3/public/messages/state.json.gz"));
   const bytesBefore = Buffer.from(bucket.get(state.headBlockKey));
   const blockId = listed.items[0].id; // 留言20，在块内
-  await store.deleteMessage(blockId);
+  await store.deleteMessage(PUBLIC_SCOPE, blockId);
   const bytesAfter = Buffer.from(bucket.get(state.headBlockKey));
   assert.ok(bytesBefore.equals(bytesAfter)); // 封存块字节不变
 
-  listed = await store.listMessages({ limit: 21 });
+  listed = await store.listMessages(PUBLIC_SCOPE, { limit: 21 });
   assert.ok(!listed.items.some((item) => item.id === blockId));
   assert.equal(listed.items[0].content, "留言19");
 });
@@ -150,11 +152,11 @@ test("F5: tombstones at logical positions 0/19/20/39 page without dup/gap, corre
   await addMessages(store, 40);
 
   // 逻辑顺序（新→旧）id 列表
-  const full = await store.listMessages({ limit: 100 });
+  const full = await store.listMessages(PUBLIC_SCOPE, { limit: 100 });
   assert.equal(full.items.length, 40);
   const posIds = [0, 19, 20, 39].map((pos) => full.items[pos].id);
   for (const id of posIds) {
-    await store.deleteMessage(id);
+    await store.deleteMessage(PUBLIC_SCOPE, id);
   }
 
   // limit=20 连续翻页
@@ -165,7 +167,7 @@ test("F5: tombstones at logical positions 0/19/20/39 page without dup/gap, corre
     if (cursor) {
       Object.assign(opts, decodeCursorSafe(cursor));
     }
-    const page = await store.listMessages(opts);
+    const page = await store.listMessages(PUBLIC_SCOPE, opts);
     pages.push(page);
     if (!page.hasMore) break;
     cursor = page.nextCursor;
@@ -192,14 +194,14 @@ test("F6.1: item added between pages is not re-served; visible via top refresh",
   await store.ensureInitialized();
   await addMessages(store, 25);
 
-  const first = await store.listMessages({ limit: 20 });
+  const first = await store.listMessages(PUBLIC_SCOPE, { limit: 20 });
   assert.equal(first.items.length, 20);
   const firstIds = new Set(first.items.map((item) => item.id));
 
   // 翻页间新增
-  await store.createMessage("后来者", "翻页间新增");
+  await store.createMessage(PUBLIC_SCOPE, "后来者", "翻页间新增");
   const decoded = decodeCursorSafe(first.nextCursor);
-  const second = await store.listMessages({ limit: 20, ...decoded });
+  const second = await store.listMessages(PUBLIC_SCOPE, { limit: 20, ...decoded });
   // 后续页不重发上页项
   assert.ok(second.items.every((item) => !firstIds.has(item.id)));
   // 新留言 id > afterId，不在本窗口
@@ -210,7 +212,7 @@ test("F6.1: item added between pages is not re-served; visible via top refresh",
   assert.equal(second.hasMore, false);
 
   // 顶部刷新：新留言在最前
-  const refreshed = await store.listMessages({ limit: 20 });
+  const refreshed = await store.listMessages(PUBLIC_SCOPE, { limit: 20 });
   assert.equal(refreshed.items[0].content, "翻页间新增");
 });
 
@@ -221,14 +223,14 @@ test("F6.2: deleting an active item between pages does not skip later items", as
   await addMessages(store, 25); // active5 + block20
 
   // limit=10：首页吃 active 前 10? active 仅5 → active5 + 块5
-  const first = await store.listMessages({ limit: 10 });
+  const first = await store.listMessages(PUBLIC_SCOPE, { limit: 10 });
   assert.deepEqual(first.items.slice(0, 5).map((i) => i.content), [
     "留言25", "留言24", "留言23", "留言22", "留言21",
   ]);
   // 翻页间删除 active 内一项（首页已返回的 #24）
-  await store.deleteMessage(first.items[1].id);
+  await store.deleteMessage(PUBLIC_SCOPE, first.items[1].id);
   const decoded = decodeCursorSafe(first.nextCursor);
-  const second = await store.listMessages({ limit: 10, ...decoded });
+  const second = await store.listMessages(PUBLIC_SCOPE, { limit: 10, ...decoded });
   // afterId 阈值扫描，块侧不跳条
   assert.equal(second.items[0].content, "留言15");
   assert.equal(second.items.length, 10);
@@ -240,14 +242,14 @@ test("F6.3: a seal between pages keeps the cursor valid along the new block", as
   await store.ensureInitialized();
   await addMessages(store, 19); // active19，无块
 
-  const first = await store.listMessages({ limit: 10 });
+  const first = await store.listMessages(PUBLIC_SCOPE, { limit: 10 });
   assert.equal(first.items.length, 10);
   assert.equal(first.items[0].content, "留言19");
 
   // 翻页间：第 20 条写入触发封存，active 清空
-  await store.createMessage("用户", "留言20");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "留言20");
   const decoded = decodeCursorSafe(first.nextCursor);
-  const second = await store.listMessages({ limit: 10, ...decoded });
+  const second = await store.listMessages(PUBLIC_SCOPE, { limit: 10, ...decoded });
   // 游标沿块取到后续、不重发
   const firstContents = new Set(first.items.map((i) => i.content));
   assert.ok(second.items.every((item) => !firstContents.has(item.content)));
@@ -265,14 +267,14 @@ test("F6.4: a fully-tombstoned block is consumed across blocks in one request", 
   await addMessages(store, 40); // block2(新,#21-40) + block1(旧,#1-20)
 
   // 给较新块 block2 全部 20 条加墓碑
-  const full = await store.listMessages({ limit: 100 });
+  const full = await store.listMessages(PUBLIC_SCOPE, { limit: 100 });
   const newerBlockIds = full.items.slice(0, 20).map((item) => item.id);
   for (const id of newerBlockIds) {
-    await store.deleteMessage(id);
+    await store.deleteMessage(PUBLIC_SCOPE, id);
   }
 
   // 一请求 limit=20：跨全墓碑块直接从旧块取满 20，无 API 级空页
-  const page = await store.listMessages({ limit: 20 });
+  const page = await store.listMessages(PUBLIC_SCOPE, { limit: 20 });
   assert.equal(page.items.length, 20);
   assert.equal(page.items[0].content, "留言20");
   assert.equal(page.items[19].content, "留言1");
@@ -292,7 +294,7 @@ test("F6.5: walking ≥3 sealed blocks keeps order and boundaries", async () => 
     if (cursor) {
       Object.assign(opts, decodeCursorSafe(cursor));
     }
-    const page = await store.listMessages(opts);
+    const page = await store.listMessages(PUBLIC_SCOPE, opts);
     pages.push(page);
     if (!page.hasMore) break;
     cursor = page.nextCursor;
@@ -323,23 +325,23 @@ test("F6.6: active=20 left by an interrupted seal seals normally on next write",
     content: `遗留${i + 1}`,
     createdAt: "2026-09-01 00:00:00",
   })).reverse(); // active 新在前
-  await putGz(bucket, "v2/messages/state.json.gz", {
-    version: 2,
+  await putGz(bucket, "v3/public/messages/state.json.gz", {
+    version: 3,
     active: items,
     headBlockKey: null,
-    tombstonesKey: "v2/messages/tombstones.json.gz",
+    tombstonesKey: "v3/public/messages/tombstones.json.gz",
     updatedAt: Date.now(),
   });
 
   // 再写入：active 变 21，>=20 正常封存恢复
-  await store.createMessage("用户", "恢复后新写");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "恢复后新写");
 
-  const state = JSON.parse(await inflateGet(bucket, "v2/messages/state.json.gz"));
+  const state = JSON.parse(await inflateGet(bucket, "v3/public/messages/state.json.gz"));
   assert.equal(state.active.length, 1);
   assert.equal(state.active[0].content, "恢复后新写");
   assert.equal(typeof state.headBlockKey, "string");
 
-  const all = await store.listMessages({ limit: 50 });
+  const all = await store.listMessages(PUBLIC_SCOPE, { limit: 50 });
   assert.equal(all.items.length, 21);
   assert.equal(all.items[0].content, "恢复后新写");
   assert.equal(all.items[1].content, "遗留20");
@@ -353,7 +355,7 @@ test("afterId across active/block boundary: page ends exactly at active last ite
   await store.ensureInitialized();
   await addMessages(store, 25); // active5 (#25-21) + block20
 
-  const first = await store.listMessages({ limit: 5 });
+  const first = await store.listMessages(PUBLIC_SCOPE, { limit: 5 });
   assert.deepEqual(first.items.map((i) => i.content), [
     "留言25", "留言24", "留言23", "留言22", "留言21",
   ]);
@@ -362,7 +364,7 @@ test("afterId across active/block boundary: page ends exactly at active last ite
   const decoded = decodeCursorSafe(first.nextCursor);
   assert.equal(decoded.blockKey, undefined);
 
-  const second = await store.listMessages({ limit: 5, ...decoded });
+  const second = await store.listMessages(PUBLIC_SCOPE, { limit: 5, ...decoded });
   assert.deepEqual(second.items.map((i) => i.content), [
     "留言20", "留言19", "留言18", "留言17", "留言16",
   ]);
@@ -383,9 +385,9 @@ test("P1-2: fresh bucket without any init supports createMessage and listMessage
   setupBackend();
   const store = await makeStore("p1-2");
   // 不调用 ensureInitialized，空桶直接写读
-  await store.createMessage("小明", "全新桶第一条");
+  await store.createMessage(PUBLIC_SCOPE, "小明", "全新桶第一条");
 
-  const page = await store.listMessages({ limit: 20 });
+  const page = await store.listMessages(PUBLIC_SCOPE, { limit: 20 });
   assert.equal(page.items.length, 1);
   assert.equal(page.items[0].nickname, "小明");
   assert.equal(page.items[0].content, "全新桶第一条");
@@ -409,7 +411,7 @@ test("P1-4: shuffled block LIST still yields global id-descending order", async 
     return { Contents: keys.map((Key) => ({ Key })) };
   });
 
-  const page = await store.listMessages({ limit: 50 });
+  const page = await store.listMessages(PUBLIC_SCOPE, { limit: 50 });
   assert.equal(page.items.length, 50);
   assert.equal(page.hasMore, true);
   // 排序防线：全局最新 50 条，严格 id 降序
@@ -432,11 +434,11 @@ test("orphan block then re-seal: deep pagination never returns duplicate ids", a
   s3Mock.on(PutObjectCommand).callsFake(async (input) => {
     if (
       !crashed &&
-      input.Key === "v2/messages/state.json.gz"
+      input.Key === "v3/public/messages/state.json.gz"
     ) {
       crashed = true;
       const blockEntries = [...bucket.keys()].filter((key) =>
-        key.startsWith("v2/messages/blocks/"),
+        key.startsWith("v3/public/messages/blocks/"),
       );
       assert.equal(blockEntries.length, 1); // 孤儿块 O 已落
       const orphanText = new TextDecoder().decode(
@@ -445,10 +447,10 @@ test("orphan block then re-seal: deep pagination never returns duplicate ids", a
       const orphanItems = JSON.parse(orphanText).items;
       // state 未记录 head，active 仍持这批 20 项（新在前）
       await putGz(bucket, input.Key, {
-        version: 2,
+        version: 3,
         active: [...orphanItems],
         headBlockKey: null,
-        tombstonesKey: "v2/messages/tombstones.json.gz",
+        tombstonesKey: "v3/public/messages/tombstones.json.gz",
         updatedAt: Date.now(),
       });
       return {};
@@ -457,13 +459,13 @@ test("orphan block then re-seal: deep pagination never returns duplicate ids", a
     return {};
   });
 
-  await store.createMessage("用户", "留言20");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "留言20");
   assert.equal(crashed, true);
 
   // 恢复后再写 1 条 → active21，封存最旧 20：与孤儿 O 同批 → 新块 N
-  await store.createMessage("用户", "留言21");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "留言21");
   const blockKeys = [...bucket.keys()].filter((key) =>
-    key.startsWith("v2/messages/blocks/"),
+    key.startsWith("v3/public/messages/blocks/"),
   );
   assert.equal(blockKeys.length, 2); // 孤儿 O + 新封存 N
 
@@ -475,7 +477,7 @@ test("orphan block then re-seal: deep pagination never returns duplicate ids", a
     if (cursor) {
       Object.assign(opts, decodeCursorSafe(cursor));
     }
-    const page = await store.listMessages(opts);
+    const page = await store.listMessages(PUBLIC_SCOPE, opts);
     collected.push(...page.items);
     if (!page.hasMore) {
       break;
@@ -502,19 +504,19 @@ test("active delete before orphaned block: deleted id never resurrects; tombston
   // 第 20 条触发封存：块 O 成功、state PUT 崩溃；写回 active20（留言20..1）/head=null
   let crashed = false;
   s3Mock.on(PutObjectCommand).callsFake(async (input) => {
-    if (!crashed && input.Key === "v2/messages/state.json.gz") {
+    if (!crashed && input.Key === "v3/public/messages/state.json.gz") {
       crashed = true;
       const blockKeyEntry = [...bucket.keys()].find((key) =>
-        key.startsWith("v2/messages/blocks/"),
+        key.startsWith("v3/public/messages/blocks/"),
       );
       const orphanItems = JSON.parse(
         new TextDecoder().decode(gunzipSync(bucket.get(blockKeyEntry))),
       ).items;
       await putGz(bucket, input.Key, {
-        version: 2,
+        version: 3,
         active: [...orphanItems],
         headBlockKey: null,
-        tombstonesKey: "v2/messages/tombstones.json.gz",
+        tombstonesKey: "v3/public/messages/tombstones.json.gz",
         updatedAt: Date.now(),
       });
       return {};
@@ -522,28 +524,28 @@ test("active delete before orphaned block: deleted id never resurrects; tombston
     bucket.set(input.Key, input.Body);
     return {};
   });
-  await store.createMessage("用户", "留言20");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "留言20");
   assert.equal(crashed, true);
 
   // 删除 active 中的留言5：先墓碑后 state（墓碑同时屏蔽孤儿 O 中的副本）
   const stateBefore = JSON.parse(
-    new TextDecoder().decode(gunzipSync(bucket.get("v2/messages/state.json.gz"))),
+    new TextDecoder().decode(gunzipSync(bucket.get("v3/public/messages/state.json.gz"))),
   );
   const cur5 = stateBefore.active.find((item) => item.content === "留言5");
-  await store.deleteMessage(cur5.id);
+  await store.deleteMessage(PUBLIC_SCOPE, cur5.id);
 
   // 墓碑集合含 cur5
   const tombstones = JSON.parse(
     new TextDecoder().decode(
-      gunzipSync(bucket.get("v2/messages/tombstones.json.gz")),
+      gunzipSync(bucket.get("v3/public/messages/tombstones.json.gz")),
     ),
   );
   assert.ok(tombstones.includes(cur5.id));
 
   // 再写 1 条触发新封存 N
-  await store.createMessage("用户", "留言21");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "留言21");
   const blockKeys = [...bucket.keys()].filter((key) =>
-    key.startsWith("v2/messages/blocks/"),
+    key.startsWith("v3/public/messages/blocks/"),
   );
   assert.equal(blockKeys.length, 2);
 
@@ -560,7 +562,7 @@ test("active delete before orphaned block: deleted id never resurrects; tombston
       if (cursor) {
         Object.assign(opts, decodeCursorSafe(cursor));
       }
-      const page = await store.listMessages(opts);
+      const page = await store.listMessages(PUBLIC_SCOPE, opts);
       collected.push(...page.items);
       if (!page.hasMore) break;
       cursor = page.nextCursor;
@@ -584,19 +586,19 @@ test("delete ordering: tombstone failure leaves state intact; state crash replay
 
   let crashed = false;
   s3Mock.on(PutObjectCommand).callsFake(async (input) => {
-    if (!crashed && input.Key === "v2/messages/state.json.gz") {
+    if (!crashed && input.Key === "v3/public/messages/state.json.gz") {
       crashed = true;
       const blockKeyEntry = [...bucket.keys()].find((key) =>
-        key.startsWith("v2/messages/blocks/"),
+        key.startsWith("v3/public/messages/blocks/"),
       );
       const orphanItems = JSON.parse(
         new TextDecoder().decode(gunzipSync(bucket.get(blockKeyEntry))),
       ).items;
       await putGz(bucket, input.Key, {
-        version: 2,
+        version: 3,
         active: [...orphanItems],
         headBlockKey: null,
-        tombstonesKey: "v2/messages/tombstones.json.gz",
+        tombstonesKey: "v3/public/messages/tombstones.json.gz",
         updatedAt: Date.now(),
       });
       return {};
@@ -604,14 +606,14 @@ test("delete ordering: tombstone failure leaves state intact; state crash replay
     bucket.set(input.Key, input.Body);
     return {};
   });
-  await store.createMessage("用户", "留言20");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "留言20");
   assert.equal(crashed, true);
 
   const cur5 = JSON.parse(
-    new TextDecoder().decode(gunzipSync(bucket.get("v2/messages/state.json.gz"))),
+    new TextDecoder().decode(gunzipSync(bucket.get("v3/public/messages/state.json.gz"))),
   ).active.find((item) => item.content === "留言5");
-  const TOMB_KEY = "v2/messages/tombstones.json.gz";
-  const STATE_KEY = "v2/messages/state.json.gz";
+  const TOMB_KEY = "v3/public/messages/tombstones.json.gz";
+  const STATE_KEY = "v3/public/messages/state.json.gz";
 
   // 阶段 A：putTombstones 失败 → state 未改、删除整体失败（可重试）
   const stateBytesA = Buffer.from(bucket.get(STATE_KEY));
@@ -622,7 +624,7 @@ test("delete ordering: tombstone failure leaves state intact; state crash replay
     bucket.set(input.Key, input.Body);
     return {};
   });
-  await assert.rejects(store.deleteMessage(cur5.id), /tombstone write failed/);
+  await assert.rejects(store.deleteMessage(PUBLIC_SCOPE, cur5.id), /tombstone write failed/);
   const stateAfterA = JSON.parse(
     new TextDecoder().decode(gunzipSync(bucket.get(STATE_KEY))),
   );
@@ -643,14 +645,14 @@ test("delete ordering: tombstone failure leaves state intact; state crash replay
     bucket.set(input.Key, input.Body);
     return {};
   });
-  await assert.rejects(store.deleteMessage(cur5.id), /state write crashed/);
+  await assert.rejects(store.deleteMessage(PUBLIC_SCOPE, cur5.id), /state write crashed/);
 
   // 恢复后重放删除（正常写入）：墓碑已含 id（去重不重复追加），state 正常更新
   s3Mock.on(PutObjectCommand).callsFake(async (input) => {
     bucket.set(input.Key, input.Body);
     return {};
   });
-  await store.deleteMessage(cur5.id);
+  await store.deleteMessage(PUBLIC_SCOPE, cur5.id);
 
   // 全量翻页：cur5 对所有副本（含孤儿 O）均不返回，其余 19 条完好、id 降序
   const collected = [];
@@ -660,7 +662,7 @@ test("delete ordering: tombstone failure leaves state intact; state crash replay
     if (cursor) {
       Object.assign(opts, decodeCursorSafe(cursor));
     }
-    const page = await store.listMessages(opts);
+    const page = await store.listMessages(PUBLIC_SCOPE, opts);
     collected.push(...page.items);
     if (!page.hasMore) break;
     cursor = page.nextCursor;
@@ -689,7 +691,7 @@ test("orphan block before a real older block: deep pages keep all 41 ids incl ol
 
   // 第 20 条 cur 触发封存：块 O（cur20…cur1 共20）PUT 成功，state PUT 崩溃。
   // 崩溃写回旧 state（active=cur19/head=C，不含 cur20）→ O 孤儿。
-  const stateKey = "v2/messages/state.json.gz";
+  const stateKey = "v3/public/messages/state.json.gz";
   let oldHeadC = "";
   let orphanO = "";
   let crashed = false;
@@ -703,7 +705,7 @@ test("orphan block before a real older block: deep pages keep all 41 ids incl ol
       // 刚写的块 O = blocks 中排除旧 head C 的那一个
       orphanO = [...bucket.keys()].find(
         (key) =>
-          key.startsWith("v2/messages/blocks/") && key !== oldHeadC,
+          key.startsWith("v3/public/messages/blocks/") && key !== oldHeadC,
       );
       // 原样写回旧 state：active=cur19/head=C
       await putGz(bucket, stateKey, previous);
@@ -713,15 +715,15 @@ test("orphan block before a real older block: deep pages keep all 41 ids incl ol
     return {};
   });
 
-  await store.createMessage("用户", "cur20");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "cur20");
   assert.equal(crashed, true);
   assert.ok(orphanO);
   assert.ok(oldHeadC);
 
   // 重启写 X：active=[X,...cur19]=20 → 整体封存为 N（X+cur19..cur1），active=[]/head=N
-  await store.createMessage("用户", "X");
+  await store.createMessage(PUBLIC_SCOPE, "用户", "X");
   const blockKeys = [...bucket.keys()].filter((key) =>
-    key.startsWith("v2/messages/blocks/"),
+    key.startsWith("v3/public/messages/blocks/"),
   );
   assert.equal(blockKeys.length, 3);
   const newN = blockKeys.find((key) => key !== orphanO && key !== oldHeadC);
@@ -737,7 +739,7 @@ test("orphan block before a real older block: deep pages keep all 41 ids incl ol
     if (cursor) {
       Object.assign(opts, decodeCursorSafe(cursor));
     }
-    const page = await store.listMessages(opts);
+    const page = await store.listMessages(PUBLIC_SCOPE, opts);
     collected.push(...page.items);
     if (!page.hasMore) {
       // 末页 hasMore=false、nextCursor=null
@@ -788,7 +790,7 @@ test("real S3 SdkStream body (transformToByteArray) is gunzipped correctly", asy
     };
   });
 
-  const page = await store.listMessages({ limit: 20 });
+  const page = await store.listMessages(PUBLIC_SCOPE, { limit: 20 });
   assert.equal(page.items.length, 3);
   assert.equal(page.items[0].content, "留言3");
   assert.equal(page.items[2].content, "留言1");

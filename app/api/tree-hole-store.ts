@@ -1,7 +1,16 @@
 import { getStore } from "./store/index.ts";
 import { decodeCursor } from "./store/cursor.ts";
+import {
+  ConflictError,
+  LockedError,
+  NotFoundError,
+} from "./store/types.ts";
 import type {
+  EntryPatch,
   ListOptions,
+  MessagePatch,
+  MutateOptions,
+  Scope,
   StoredEntry,
   StoredMessage,
 } from "./store/types.ts";
@@ -12,41 +21,104 @@ const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
 const ADMIN_LIMIT = 100;
 
+export { NotFoundError };
+
 export async function ensureTables() {
   await getStore().ensureInitialized();
 }
 
-export async function listMessages(options?: Partial<ListOptions>) {
-  return getStore().listMessages(withLimit(options));
+// —— 留言 ——
+
+export function listMessages(scope: Scope, options?: Partial<ListOptions>) {
+  return getStore().listMessages(scope, withLimit(options));
 }
 
-export async function listEntries(options?: Partial<ListOptions>) {
-  return getStore().listEntries(withLimit(options));
+export function createMessage(scope: Scope, nickname: string, content: string) {
+  return getStore().createMessage(scope, nickname, content);
 }
 
-export async function createMessage(nickname: string, content: string) {
-  await getStore().createMessage(nickname, content);
+export function updateMessage(
+  scope: Scope,
+  id: string,
+  patch: MessagePatch,
+  options?: MutateOptions,
+) {
+  return getStore().updateMessage(scope, id, patch, options);
 }
 
-export async function deleteMessage(id: string) {
-  await getStore().deleteMessage(id);
+export function setMessageLocked(
+  scope: Scope,
+  id: string,
+  locked: boolean,
+  options?: MutateOptions,
+) {
+  return getStore().setMessageLocked(scope, id, locked, options);
 }
 
-export async function createEntry(mood: string, content: string, reply: string) {
-  await getStore().createEntry(mood, content, reply);
+export function deleteMessage(scope: Scope, id: string) {
+  return getStore().deleteMessage(scope, id);
 }
 
-export async function deleteEntry(id: string) {
-  await getStore().deleteEntry(id);
+// —— 封存 ——
+
+export function listEntries(scope: Scope, options?: Partial<ListOptions>) {
+  return getStore().listEntries(scope, withLimit(options));
 }
 
-// 管理员需要全量：按游标翻页直到收完
-export async function listAllEntries() {
-  return collectAll(listEntries);
+export function createEntry(scope: Scope, mood: string, content: string) {
+  return getStore().createEntry(scope, mood, content);
 }
 
-export async function listAllMessages() {
-  return collectAll(listMessages);
+export function updateEntry(
+  scope: Scope,
+  id: string,
+  patch: EntryPatch,
+  options?: MutateOptions,
+) {
+  return getStore().updateEntry(scope, id, patch, options);
+}
+
+export function setEntryReply(scope: Scope, id: string, reply: string) {
+  return getStore().setEntryReply(scope, id, reply);
+}
+
+export function setEntryLocked(
+  scope: Scope,
+  id: string,
+  locked: boolean,
+  options?: MutateOptions,
+) {
+  return getStore().setEntryLocked(scope, id, locked, options);
+}
+
+export function deleteEntry(scope: Scope, id: string) {
+  return getStore().deleteEntry(scope, id);
+}
+
+// —— 管理员跨空间聚合（§4.3 服务层）——
+
+// 公共空间 + 每个口令空间 + 每个账号空间分别收全量
+export async function listAllAcrossScopes(): Promise<{
+  messages: StoredMessage[];
+  entries: StoredEntry[];
+}> {
+  const store = getStore();
+  const [passSpaces, users] = await Promise.all([
+    store.listPassSpaces(),
+    store.listUsers(),
+  ]);
+  const scopes: Scope[] = [
+    { kind: "public", id: "" },
+    ...passSpaces.map((info): Scope => ({ kind: "pass", id: info.id })),
+    ...users.map((user): Scope => ({ kind: "user", id: user.id })),
+  ];
+  const messages: StoredMessage[] = [];
+  const entries: StoredEntry[] = [];
+  for (const scope of scopes) {
+    messages.push(...await collectAll((options) => listMessages(scope, options)));
+    entries.push(...await collectAll((options) => listEntries(scope, options)));
+  }
+  return { messages, entries };
 }
 
 async function collectAll<T>(
@@ -117,4 +189,15 @@ export function normalizeNickname(value: string | undefined) {
 
 export function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
+}
+
+// Store 错误 → HTTP 状态（NotFound=404 / Locked·Conflict=409，其余 500）
+export function errorStatus(error: unknown): { status: number; message: string } {
+  if (error instanceof NotFoundError) {
+    return { status: 404, message: error.message };
+  }
+  if (error instanceof LockedError || error instanceof ConflictError) {
+    return { status: 409, message: error.message };
+  }
+  return { status: 500, message: toErrorMessage(error) };
 }

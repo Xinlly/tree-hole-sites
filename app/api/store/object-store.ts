@@ -8,17 +8,32 @@ import {
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { monotonicFactory } from "ulid";
-import { encodeCursor } from "./cursor.ts";
+import {
+  blockKeyMatchesScope,
+  encodeCursor,
+} from "./cursor.ts";
+import {
+  ConflictError,
+  LockedError,
+  NotFoundError,
+} from "./types.ts";
 import type {
+  AccountPatch,
+  EntryPatch,
   ListOptions,
+  MessagePatch,
+  MutateOptions,
   Page,
-  Store,
+  PassSpaceInfo,
+  Scope,
+  StoredAccount,
   StoredEntry,
   StoredMessage,
+  Store,
 } from "./types.ts";
 
 const ACTIVE_MAX = 20;
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const MESSAGES = "messages";
 const ENTRIES = "entries";
 
@@ -45,13 +60,21 @@ type Location<T> = {
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+const USERS_KEY = "v3/users/state.json.gz";
+const PASS_INDEX_KEY = "v3/pass-space-index.json.gz";
+const USERS_QUEUE = "__users__";
+const PASS_INDEX_QUEUE = "__pass_index__";
+
+type UsersDocument = {
+  version: number;
+  users: StoredAccount[];
+};
+
 export class ObjectStore implements Store {
   private client: S3Client;
   private newId: () => string;
-  private tails: Record<CollectionName, Promise<void>> = {
-    [MESSAGES]: Promise.resolve(),
-    [ENTRIES]: Promise.resolve(),
-  };
+  // 每“空间×集合”一个串行队列；users 与 pass-space-index 各独立队列
+  private tails = new Map<string, Promise<void>>();
 
   constructor() {
     this.client = new S3Client({
@@ -71,78 +94,189 @@ export class ObjectStore implements Store {
   }
 
   async ensureInitialized() {
-    await Promise.all([
-      this.enqueue(MESSAGES, () => this.initializeCollection(MESSAGES)),
-      this.enqueue(ENTRIES, () => this.initializeCollection(ENTRIES)),
-    ]);
+    // 容器按需惰性初始化；此处不预建任何空间
   }
 
-  listMessages(options: ListOptions) {
-    return this.readPage<StoredMessage>(MESSAGES, options);
+  // —— 留言 ——
+
+  listMessages(scope: Scope, options: ListOptions) {
+    return this.readPage<StoredMessage>(scope, MESSAGES, options);
   }
 
-  async createMessage(nickname: string, content: string) {
-    await this.enqueue(MESSAGES, () =>
-      this.append<StoredMessage>(MESSAGES, {
+  async createMessage(scope: Scope, nickname: string, content: string) {
+    await this.enqueue(queueKey(scope, MESSAGES), () =>
+      this.append<StoredMessage>(scope, MESSAGES, {
         id: this.newId(),
+        scopeKind: scope.kind,
+        scopeId: scope.id,
         nickname,
         content,
+        locked: false,
         createdAt: currentTimestamp(),
-      }),
-    );
+      }));
   }
 
-  async deleteMessage(id: string) {
-    await this.enqueue(MESSAGES, () => this.remove(MESSAGES, id));
+  async updateMessage(scope: Scope, id: string, patch: MessagePatch, options?: MutateOptions) {
+    await this.enqueue(queueKey(scope, MESSAGES), () =>
+      this.mutateItem(scope, MESSAGES, id, (item) => {
+        const message = item as StoredMessage;
+        if (patch.nickname !== undefined) message.nickname = patch.nickname;
+        if (patch.content !== undefined) message.content = patch.content;
+      }, options?.bypassLock ?? false));
   }
 
-  listEntries(options: ListOptions) {
-    return this.readPage<StoredEntry>(ENTRIES, options);
+  async setMessageLocked(scope: Scope, id: string, locked: boolean, options?: MutateOptions) {
+    await this.enqueue(queueKey(scope, MESSAGES), () =>
+      this.mutateItem(scope, MESSAGES, id, (item) => {
+        (item as StoredMessage).locked = locked;
+      }, options?.bypassLock ?? false));
   }
 
-  async createEntry(mood: string, content: string, reply: string) {
-    await this.enqueue(ENTRIES, () =>
-      this.append<StoredEntry>(ENTRIES, {
+  async deleteMessage(scope: Scope, id: string) {
+    await this.enqueue(queueKey(scope, MESSAGES), () =>
+      this.remove(scope, MESSAGES, id));
+  }
+
+  // —— 封存 ——
+
+  listEntries(scope: Scope, options: ListOptions) {
+    return this.readPage<StoredEntry>(scope, ENTRIES, options);
+  }
+
+  async createEntry(scope: Scope, mood: string, content: string) {
+    await this.enqueue(queueKey(scope, ENTRIES), () =>
+      this.append<StoredEntry>(scope, ENTRIES, {
         id: this.newId(),
+        scopeKind: scope.kind,
+        scopeId: scope.id,
         mood,
         content,
-        reply,
+        reply: "", // 任何创建都不写回复；回复一律走 :id/reply
+        locked: false,
         createdAt: currentTimestamp(),
-      }),
-    );
+      }));
   }
 
-  async deleteEntry(id: string) {
-    await this.enqueue(ENTRIES, () => this.remove(ENTRIES, id));
+  async updateEntry(scope: Scope, id: string, patch: EntryPatch, options?: MutateOptions) {
+    await this.enqueue(queueKey(scope, ENTRIES), () =>
+      this.mutateItem(scope, ENTRIES, id, (item) => {
+        const entry = item as StoredEntry;
+        if (patch.mood !== undefined) entry.mood = patch.mood;
+        if (patch.content !== undefined) entry.content = patch.content;
+      }, options?.bypassLock ?? false));
   }
 
-  private enqueue<T>(name: CollectionName, task: () => Promise<T>): Promise<T> {
-    const run = this.tails[name].then(() => task());
+  async setEntryReply(scope: Scope, id: string, reply: string) {
+    await this.enqueue(queueKey(scope, ENTRIES), () =>
+      this.mutateItem(scope, ENTRIES, id, (item) => {
+        (item as StoredEntry).reply = reply;
+      }, true));
+  }
+
+  async setEntryLocked(scope: Scope, id: string, locked: boolean, options?: MutateOptions) {
+    await this.enqueue(queueKey(scope, ENTRIES), () =>
+      this.mutateItem(scope, ENTRIES, id, (item) => {
+        (item as StoredEntry).locked = locked;
+      }, options?.bypassLock ?? false));
+  }
+
+  async deleteEntry(scope: Scope, id: string) {
+    await this.enqueue(queueKey(scope, ENTRIES), () =>
+      this.remove(scope, ENTRIES, id));
+  }
+
+  // —— 账号（§4.4）——
+
+  async listUsers() {
+    return this.enqueue(USERS_QUEUE, async () => (await this.readUsers()).users);
+  }
+
+  async createUser(username: string, passwordHash: string) {
+    return this.enqueue(USERS_QUEUE, async () => {
+      const doc = await this.readUsers();
+      const lowered = username.toLowerCase();
+      if (doc.users.some((user) => user.username.toLowerCase() === lowered)) {
+        throw new ConflictError("username already exists");
+      }
+      const account: StoredAccount = {
+        id: this.newId(),
+        username,
+        passwordHash,
+        active: true,
+        tokenVersion: 1,
+        createdAt: currentTimestamp(),
+      };
+      doc.users.push(account);
+      await this.writeUsers(doc);
+      return account;
+    });
+  }
+
+  async updateUser(id: string, patch: AccountPatch) {
+    return this.enqueue(USERS_QUEUE, async () => {
+      const doc = await this.readUsers();
+      const account = doc.users.find((user) => user.id === id);
+      if (!account) {
+        throw new NotFoundError("user not found");
+      }
+      if (patch.passwordHash !== undefined) {
+        account.passwordHash = patch.passwordHash;
+        account.tokenVersion += 1; // 旧令牌立即失效
+      }
+      if (patch.active !== undefined) {
+        account.active = patch.active; // 重新启用不 bump（§4.4）
+      }
+      await this.writeUsers(doc);
+      return account;
+    });
+  }
+
+  // —— 口令空间索引（§4.5）——
+
+  async listPassSpaces() {
+    return this.enqueue(PASS_INDEX_QUEUE, () => this.readPassIndex());
+  }
+
+  async ensurePassSpace(id: string) {
+    return this.enqueue(PASS_INDEX_QUEUE, async () => {
+      const index = await this.readPassIndex();
+      const existing = index.find((info) => info.id === id);
+      if (existing) {
+        return existing;
+      }
+      const info: PassSpaceInfo = { id, createdAt: currentTimestamp() };
+      index.push(info);
+      await this.putObject(
+        PASS_INDEX_KEY,
+        gzipSync(Buffer.from(JSON.stringify(index), "utf8")),
+      );
+      return info;
+    });
+  }
+
+  // —— 内部：队列 ——
+
+  private enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const tail = this.tails.get(key) ?? Promise.resolve();
+    const run = tail.then(() => task());
     // 内部兜底 catch：失败只作用于当次请求，不污染链尾
-    this.tails[name] = run.then(
-      () => undefined,
-      () => undefined,
+    this.tails.set(
+      key,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
     );
     return run;
   }
 
-  private async initializeCollection(name: CollectionName) {
-    try {
-      await this.getObject(stateKey(name));
-    } catch (error) {
-      if (isNoSuchKey(error)) {
-        await this.putState(name, { active: [], headBlockKey: null });
-      } else {
-        throw error;
-      }
-    }
-  }
+  // —— 内部：分块容器（复用 v2 chunked 机制）——
 
-  private async append<T>(name: CollectionName, item: T) {
-    const state = await this.readState<T>(name);
+  private async append<T>(scope: Scope, name: CollectionName, item: T) {
+    const state = await this.readState<T>(scope, name);
     state.active.unshift(item); // active 新在前（id 倒序）
     if (state.active.length < ACTIVE_MAX) {
-      await this.putState(name, state);
+      await this.putState(scope, name, state);
       return;
     }
 
@@ -150,7 +284,7 @@ export class ObjectStore implements Store {
     const length = state.active.length;
     const sealed = state.active.slice(length - ACTIVE_MAX);
     const blockId = this.newId();
-    const key = blockKey(name, blockId);
+    const key = buildBlockKey(scope, name, blockId);
     await this.putObject(
       key,
       gzipSync(
@@ -159,11 +293,11 @@ export class ObjectStore implements Store {
     );
     state.active = state.active.slice(0, length - ACTIVE_MAX);
     state.headBlockKey = key;
-    await this.putState(name, state);
+    await this.putState(scope, name, state);
   }
 
-  private async remove<T>(name: CollectionName, id: string) {
-    const state = await this.readState<T>(name);
+  private async remove<T>(scope: Scope, name: CollectionName, id: string) {
+    const state = await this.readState<T>(scope, name);
 
     // 统一删除：先把 id 落墓碑（去重追加），使删除事实跨对象持久化，
     // 否则崩溃遗留的孤儿块仍持该 id，深翻页会让已删项复活。
@@ -178,17 +312,102 @@ export class ObjectStore implements Store {
     );
     if (activeIndex >= 0) {
       state.active.splice(activeIndex, 1);
-      await this.putState(name, state);
+      await this.putState(scope, name, state);
     }
   }
 
+  // §5.1 原地改：active 内随 state 整写；封存块内定位 id → 读-改-同键整体覆盖。
+  private async mutateItem<T>(
+    scope: Scope,
+    name: CollectionName,
+    id: string,
+    apply: (item: T) => void,
+    bypassLock: boolean,
+  ) {
+    const state = await this.readState<T>(scope, name);
+    const tombstones = new Set(
+      await this.readTombstones(state.tombstonesKey),
+    );
+    if (tombstones.has(id)) {
+      throw new NotFoundError(`${name} item not found`);
+    }
+
+    const lockedItem = (item: { locked?: boolean }) =>
+      !bypassLock && item.locked === true;
+
+    const activeItem = state.active.find(
+      (item) => (item as { id: string }).id === id,
+    );
+    if (activeItem) {
+      if (lockedItem(activeItem as { locked?: boolean })) {
+        throw new LockedError("item is locked");
+      }
+      apply(activeItem);
+      (activeItem as { updatedAt?: string }).updatedAt = currentTimestamp();
+      await this.putState(scope, name, state);
+      return;
+    }
+
+    // 从最新块向更旧块逐个定位（块键反转 ULID，LIST 升序即新→旧）
+    let blockKeyToRead = state.headBlockKey;
+    while (blockKeyToRead) {
+      const block = await this.readBlock<T>(blockKeyToRead);
+      const index = block.items.findIndex(
+        (item) => (item as { id: string }).id === id,
+      );
+      if (index >= 0) {
+        if (lockedItem(block.items[index] as { locked?: boolean })) {
+          throw new LockedError("item is locked");
+        }
+        apply(block.items[index]);
+        (block.items[index] as { updatedAt?: string }).updatedAt =
+          currentTimestamp();
+        await this.putObject(
+          blockKeyToRead,
+          gzipSync(Buffer.from(JSON.stringify(block), "utf8")),
+        );
+        return;
+      }
+      blockKeyToRead = await this.nextOlderBlockKey(
+        scope,
+        name,
+        blockKeyToRead,
+      );
+    }
+    throw new NotFoundError(`${name} item not found`);
+  }
+
+  // 取 LIST 升序中紧排在 currentKey 之后的块键（=更旧的下一块）
+  private async nextOlderBlockKey(
+    scope: Scope,
+    name: CollectionName,
+    currentKey: string,
+  ): Promise<string | null> {
+    const response = await this.client.send(
+      new ListObjectsV2Command({
+        Bucket: process.env.STORAGE_OBJECT_BUCKET,
+        Prefix: `${scopePrefix(scope)}/${name}/blocks/`,
+        StartAfter: currentKey,
+        MaxKeys: 1,
+      }),
+    );
+    return response.Contents?.[0]?.Key ?? null;
+  }
+
   private async readPage<T>(
+    scope: Scope,
     name: CollectionName,
     options: ListOptions,
   ): Promise<Page<T>> {
+    if (
+      options.blockKey !== undefined &&
+      !blockKeyMatchesScope(options.blockKey, scope)
+    ) {
+      throw new Error("invalid cursor");
+    }
     // 乐观并行 GET：state 与 tombstones 并行；headBlock 读到 headBlockKey 后立即 GET
-    const stateP = this.readState<T>(name);
-    const tombstonesP = this.readTombstones(tombstonesKey(name));
+    const stateP = this.readState<T>(scope, name);
+    const tombstonesP = this.readTombstones(buildTombstonesKey(scope, name));
     const headBlockP = stateP.then((state) => {
       if (!state.headBlockKey) {
         return null;
@@ -223,6 +442,7 @@ export class ObjectStore implements Store {
 
     if (options.blockKey !== undefined) {
       await this.collectFromHint<T>(
+        scope,
         name,
         options.blockKey,
         options.index,
@@ -244,6 +464,7 @@ export class ObjectStore implements Store {
       if (seen.size < options.limit + 1 && state.headBlockKey) {
         const startAfter = headBlock ? state.headBlockKey : undefined;
         await this.collectBlocks<T>(
+          scope,
           name,
           startAfter,
           locations,
@@ -287,6 +508,7 @@ export class ObjectStore implements Store {
 
   // 从 cursor 块提示起收集：hint 块 index 之后 → 更旧块；提示块 404 则回退全链 LIST
   private async collectFromHint<T>(
+    scope: Scope,
     name: CollectionName,
     hintBlockKey: string,
     hintIndex: number | undefined,
@@ -303,7 +525,15 @@ export class ObjectStore implements Store {
         throw error;
       }
       // 提示失效：回退为从头 LIST 全块（active 项 id 均 > afterId，已被过滤）
-      await this.collectBlocks<T>(name, undefined, locations, seen, alive, need);
+      await this.collectBlocks<T>(
+        scope,
+        name,
+        undefined,
+        locations,
+        seen,
+        alive,
+        need,
+      );
       return;
     }
     const start = Math.min((hintIndex ?? -1) + 1, hintBlock.items.length);
@@ -316,11 +546,20 @@ export class ObjectStore implements Store {
         if (seen.size >= need) return;
       }
     }
-    await this.collectBlocks<T>(name, hintBlockKey, locations, seen, alive, need);
+    await this.collectBlocks<T>(
+      scope,
+      name,
+      hintBlockKey,
+      locations,
+      seen,
+      alive,
+      need,
+    );
   }
 
   // LIST 块链并收集存活项，唯一 id 收满 need 即停；StartAfter 使深分页不逐块 GET 新块
   private async collectBlocks<T>(
+    scope: Scope,
     name: CollectionName,
     startAfter: string | undefined,
     locations: Location<T>[],
@@ -331,7 +570,7 @@ export class ObjectStore implements Store {
     const response = await this.client.send(
       new ListObjectsV2Command({
         Bucket: process.env.STORAGE_OBJECT_BUCKET,
-        Prefix: `v2/${name}/blocks/`,
+        Prefix: `${scopePrefix(scope)}/${name}/blocks/`,
         StartAfter: startAfter,
         MaxKeys: 1000,
       }),
@@ -355,18 +594,21 @@ export class ObjectStore implements Store {
     }
   }
 
-  private async readState<T>(name: CollectionName): Promise<State<T>> {
+  private async readState<T>(
+    scope: Scope,
+    name: CollectionName,
+  ): Promise<State<T>> {
     let text: string;
     try {
-      text = await this.getObject(stateKey(name));
+      text = await this.getObject(buildStateKey(scope, name));
     } catch (error) {
       if (isNoSuchKey(error)) {
-        // §4.1.1：state 缺失视为空活动区、无块
+        // state 缺失视为空活动区、无块
         return {
           version: STATE_VERSION,
           active: [],
           headBlockKey: null,
-          tombstonesKey: tombstonesKey(name),
+          tombstonesKey: buildTombstonesKey(scope, name),
           updatedAt: 0,
         };
       }
@@ -379,21 +621,27 @@ export class ObjectStore implements Store {
       !(value.headBlockKey === null || typeof value.headBlockKey === "string") ||
       typeof value.tombstonesKey !== "string"
     ) {
-      throw new Error(`Invalid state object in ${stateKey(name)}`);
+      throw new Error(
+        `Invalid state object in ${buildStateKey(scope, name)}`,
+      );
     }
     return value;
   }
 
-  private putState<T>(name: CollectionName, state: { active: T[]; headBlockKey: string | null }) {
+  private putState<T>(
+    scope: Scope,
+    name: CollectionName,
+    state: State<T>,
+  ) {
     const full: State<T> = {
       version: STATE_VERSION,
       active: state.active,
       headBlockKey: state.headBlockKey,
-      tombstonesKey: tombstonesKey(name),
+      tombstonesKey: buildTombstonesKey(scope, name),
       updatedAt: Date.now(),
     };
     return this.putObject(
-      stateKey(name),
+      buildStateKey(scope, name),
       gzipSync(Buffer.from(JSON.stringify(full), "utf8")),
     );
   }
@@ -428,6 +676,54 @@ export class ObjectStore implements Store {
     );
   }
 
+  // —— 内部：users 文档 / pass 索引 ——
+
+  private async readUsers(): Promise<UsersDocument> {
+    try {
+      const value = JSON.parse(await this.getObject(USERS_KEY)) as UsersDocument;
+      if (value.version !== STATE_VERSION || !Array.isArray(value.users)) {
+        throw new Error(`Invalid users object in ${USERS_KEY}`);
+      }
+      return value;
+    } catch (error) {
+      if (isNoSuchKey(error)) {
+        return { version: STATE_VERSION, users: [] };
+      }
+      throw error;
+    }
+  }
+
+  private writeUsers(doc: UsersDocument) {
+    return this.putObject(
+      USERS_KEY,
+      gzipSync(Buffer.from(JSON.stringify(doc), "utf8")),
+    );
+  }
+
+  private async readPassIndex(): Promise<PassSpaceInfo[]> {
+    try {
+      const value = JSON.parse(await this.getObject(PASS_INDEX_KEY));
+      if (
+        !Array.isArray(value) ||
+        value.some(
+          (item) =>
+            typeof item?.id !== "string" ||
+            typeof item.createdAt !== "string",
+        )
+      ) {
+        throw new Error(`Invalid pass-space index in ${PASS_INDEX_KEY}`);
+      }
+      return value as PassSpaceInfo[];
+    } catch (error) {
+      if (isNoSuchKey(error)) {
+        return [];
+      }
+      throw error;
+    }
+  }
+
+  // —— 内部：S3 IO ——
+
   private async getObject(key: string): Promise<string> {
     const response = await this.client.send(
       new GetObjectCommand({
@@ -450,16 +746,29 @@ export class ObjectStore implements Store {
   }
 }
 
-function stateKey(name: CollectionName) {
-  return `v2/${name}/state.json.gz`;
+// —— 键布局 ——
+
+function scopePrefix(scope: Scope) {
+  if (scope.kind === "public") {
+    return "v3/public";
+  }
+  return `v3/${scope.kind}/${scope.id}`;
 }
 
-function tombstonesKey(name: CollectionName) {
-  return `v2/${name}/tombstones.json.gz`;
+function queueKey(scope: Scope, name: CollectionName) {
+  return `${scope.kind}:${scope.id}:${name}`;
 }
 
-function blockKey(name: CollectionName, blockId: string) {
-  return `v2/${name}/blocks/${invertUlid(blockId)}.json.gz`;
+function buildStateKey(scope: Scope, name: CollectionName) {
+  return `${scopePrefix(scope)}/${name}/state.json.gz`;
+}
+
+function buildTombstonesKey(scope: Scope, name: CollectionName) {
+  return `${scopePrefix(scope)}/${name}/tombstones.json.gz`;
+}
+
+function buildBlockKey(scope: Scope, name: CollectionName, blockId: string) {
+  return `${scopePrefix(scope)}/${name}/blocks/${invertUlid(blockId)}.json.gz`;
 }
 
 // Crockford 字母表对称位置取反 f(i)=31−i：blockId 越大（新）→ inverted 越小 → LIST 升序越靠前
