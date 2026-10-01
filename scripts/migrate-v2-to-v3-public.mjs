@@ -92,10 +92,16 @@ async function migrateCollection(client, bucket, name) {
     });
   }
 
-  // 2) 搬墓碑（原样保留 id，防已删项复活）
-  const tombstones = JSON.parse(
-    await getObject(client, bucket, state.tombstonesKey),
-  );
+  // 2) 搬墓碑（原样保留 id，防已删项复活）。v2 墓碑懒创建：从未删除过的空间无此对象 → []
+  let tombstones;
+  try {
+    tombstones = JSON.parse(
+      await getObject(client, bucket, state.tombstonesKey),
+    );
+  } catch (error) {
+    if (!isNoSuchKey(error)) throw error;
+    tombstones = [];
+  }
   if (!Array.isArray(tombstones)) {
     throw new Error(`invalid v2 tombstones in ${state.tombstonesKey}`);
   }

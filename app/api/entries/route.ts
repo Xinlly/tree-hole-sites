@@ -22,7 +22,11 @@ export async function GET(request: Request) {
     }
     return Response.json(await listEntries(auth.scope, options));
   } catch (error) {
-    return Response.json({ error: toErrorMessage(error) }, { status: 500 });
+    const mapped = errorStatus(error);
+    return Response.json(
+      { error: mapped.message },
+      { status: mapped.status },
+    );
   }
 }
 
@@ -57,5 +61,3 @@ export async function POST(request: Request) {
     return Response.json({ error: toErrorMessage(error) }, { status: 500 });
   }
 }
-
-export { errorStatus };

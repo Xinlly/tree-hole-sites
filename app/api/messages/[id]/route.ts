@@ -1,7 +1,6 @@
 import {
   deleteMessage,
   errorStatus,
-  toErrorMessage,
   updateMessage,
 } from "../../tree-hole-store";
 import {
@@ -82,5 +81,3 @@ function normalizeNicknameValue(value: string) {
   const nickname = value.trim();
   return nickname ? nickname.slice(0, 24) : "匿名";
 }
-
-export { toErrorMessage };

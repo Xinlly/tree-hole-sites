@@ -77,11 +77,11 @@ export async function passJar(passphrase) {
   return new Map([["tree_hole_pass_session", await sha256Hex(passphrase)]]);
 }
 
-// §3.4 user session=userId.tokenVersion.expiresAt.sig（复刻签名，测试用固定 secret）
+// §3.4 user session=userId.tokenVersion.expiresAt.sig（expiresAt 为毫秒；复刻签名，测试用固定 secret）
 export async function userJar(account, expiresInSeconds = 3600) {
   const userId = account.id;
   const tokenVersion = account.tokenVersion;
-  const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
+  const expiresAt = Date.now() + expiresInSeconds * 1000;
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(process.env.TREE_HOLE_SIGN_SECRET),

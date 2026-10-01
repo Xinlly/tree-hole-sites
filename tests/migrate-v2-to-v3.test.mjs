@@ -239,3 +239,84 @@ test("M3: missing v2 collections seed empty v3/public containers and still write
     server.close();
   }
 });
+
+test("M4: v2 collection without tombstones object (never deleted) migrates with []", async () => {
+  const store = new Map();
+  const put = (key, value) => store.set(key, gz(value));
+  // messages：state + 一个块，但不预放 tombstones
+  put("v2/messages/state.json.gz", {
+    version: 2,
+    active: [],
+    headBlockKey: "v2/messages/blocks/blockA",
+    tombstonesKey: "v2/messages/tombstones.json.gz",
+    updatedAt: 1,
+  });
+  put("v2/messages/blocks/blockA", {
+    id: "blockA",
+    items: [
+      { id: m1.id, nickname: "甲", content: "留言一", createdAt: "2026-09-01 10:00:00" },
+    ],
+  });
+  // entries：无块、无墓碑
+  put("v2/entries/state.json.gz", {
+    version: 2,
+    active: [],
+    headBlockKey: null,
+    tombstonesKey: "v2/entries/tombstones.json.gz",
+    updatedAt: 1,
+  });
+
+  const listXml = (prefix) => {
+    const keys = [...store.keys()].filter((k) => k.startsWith(prefix)).sort();
+    const contents = keys
+      .map((k) => `<Contents><Key>${k}</Key></Contents>`)
+      .join("");
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">${contents}</ListBucketResult>`;
+  };
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      if (url.searchParams.get("list-type") === "2") {
+        res.statusCode = 200;
+        res.setHeader("content-type", "application/xml");
+        return res.end(listXml(url.searchParams.get("prefix") ?? ""));
+      }
+      const key = decodeURIComponent(url.pathname.slice(`/${BUCKET}/`.length));
+      if (req.method === "GET") {
+        if (store.has(key)) {
+          res.statusCode = 200;
+          return res.end(store.get(key));
+        }
+        res.statusCode = 404;
+        res.setHeader("content-type", "application/xml");
+        return res.end("<Error><Code>NoSuchKey</Code></Error>");
+      }
+      if (req.method === "PUT") {
+        store.set(key, Buffer.concat(chunks));
+        res.statusCode = 200;
+        return res.end();
+      }
+      res.statusCode = 405;
+      res.end();
+    });
+  });
+  await new Promise((resolve) => server.listen(PORT, "127.0.0.1", resolve));
+  try {
+    const log = await runMigration();
+    assert.match(log, /v2 -> v3\/public migrated/);
+    // 墓碑兜底为 []
+    assert.deepEqual(readGz(store, "v3/public/messages/tombstones.json.gz"), []);
+    assert.deepEqual(readGz(store, "v3/public/entries/tombstones.json.gz"), []);
+    // 块仍正确搬迁
+    const block = readGz(store, "v3/public/messages/blocks/blockA");
+    assert.equal(block.items[0].scopeKind, "public");
+    assert.equal(block.items[0].locked, false);
+    assert.ok(store.has(MARKER));
+  } finally {
+    server.close();
+  }
+});

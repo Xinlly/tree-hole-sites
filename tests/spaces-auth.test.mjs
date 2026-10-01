@@ -560,6 +560,31 @@ test("A8: 重置密码后旧令牌（旧 tokenVersion）立即 401；新密码�
   assert.equal(newLogin.status, 200);
 });
 
+test("A6: 令牌自然过期后读接口 401；有效期内 200（expiresAt 毫秒，防量纲回归）", async () => {
+  const a = await createAccount("hugo");
+  await invoke(messagesRoute.POST, {
+    method: "POST",
+    path: "/api/messages?scope=user",
+    jar: await userJar(a),
+    body: { content: "私密内容" },
+  });
+
+  // 有效期内 200
+  const fresh = await invoke(messagesRoute.GET, {
+    path: "/api/messages?scope=user",
+    jar: await userJar(a, 3600),
+  });
+  assert.equal(fresh.status, 200);
+  assert.equal((await readJson(fresh)).items.length, 1);
+
+  // 已过期（expiresAt 落在 1 秒前）→ 401
+  const expired = await invoke(messagesRoute.GET, {
+    path: "/api/messages?scope=user",
+    jar: await userJar(a, -1),
+  });
+  assert.equal(expired.status, 401);
+});
+
 test("A8: 成员 query 传他人 scopeId 无效（以会话 cookie 为准）", async () => {
   const a = await createAccount("frank");
   const b = await createAccount("grace");

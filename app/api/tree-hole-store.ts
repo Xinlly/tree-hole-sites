@@ -191,8 +191,11 @@ export function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
-// Store 错误 → HTTP 状态（NotFound=404 / Locked·Conflict=409，其余 500）
+// Store 错误 → HTTP 状态（invalid cursor=400 / NotFound=404 / Locked·Conflict=409，其余 500）
 export function errorStatus(error: unknown): { status: number; message: string } {
+  if (error instanceof Error && error.message === "invalid cursor") {
+    return { status: 400, message: error.message };
+  }
   if (error instanceof NotFoundError) {
     return { status: 404, message: error.message };
   }

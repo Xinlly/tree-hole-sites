@@ -1,5 +1,6 @@
 import {
   createMessage,
+  errorStatus,
   listMessages,
   normalizeNickname,
   parseListQuery,
@@ -22,7 +23,11 @@ export async function GET(request: Request) {
     }
     return Response.json(await listMessages(auth.scope, options));
   } catch (error) {
-    return Response.json({ error: toErrorMessage(error) }, { status: 500 });
+    const mapped = errorStatus(error);
+    return Response.json(
+      { error: mapped.message },
+      { status: mapped.status },
+    );
   }
 }
 

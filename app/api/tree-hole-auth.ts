@@ -110,7 +110,7 @@ export async function verifyUserToken(token: string): Promise<StoredAccount | nu
   }
   const expected = await signToken(userId, tokenVersion, expiresAt);
   if (!constantTimeEqual(sig, expected)) return null;
-  if (expiresAt * 1000 <= Date.now()) return null;
+  if (expiresAt <= Date.now()) return null;
 
   const account = (await getStore().listUsers()).find((user) => user.id === userId);
   if (!account || !account.active) return null;
