@@ -708,6 +708,7 @@ function MessageCard({
   };
 
   const lock = async () => {
+    if (!window.confirm("锁定后空间成员将无法修改，确定锁定？")) return;
     setBusy(true);
     setError("");
     try {
@@ -874,6 +875,7 @@ function EntryCard({
   };
 
   const lock = async () => {
+    if (!window.confirm("锁定后空间成员将无法修改，确定锁定？")) return;
     setBusy(true);
     setError("");
     try {
@@ -1402,6 +1404,7 @@ function AdminRow({
             ? `心情：${(item as AdminEntry).mood}`
             : (item as AdminMessage).nickname}
           {item.locked && " · 🔒"}
+          {item.scopeKind !== "public" && ` · ${item.scopeId.slice(0, 8)}`}
         </span>
         <span>{formatTime(item.createdAt)}</span>
       </div>

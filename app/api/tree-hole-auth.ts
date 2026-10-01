@@ -77,6 +77,11 @@ export async function setPassSessionCookie(passphrase: string) {
   cookieStore.set(PASS_COOKIE, await passSpaceId(passphrase), cookieOptions());
 }
 
+export async function clearPublicCookie() {
+  const cookieStore = await cookies();
+  cookieStore.set(PUBLIC_COOKIE, "", cookieClearOptions());
+}
+
 export async function clearPassCookie() {
   const cookieStore = await cookies();
   cookieStore.set(PASS_COOKIE, "", cookieClearOptions());
@@ -332,15 +337,6 @@ export function assertSameOrigin(request: Request): boolean {
     return false;
   }
   return true;
-}
-
-// —— Cookie 清理（logout 清全部四类）——
-
-export async function clearAllCookies() {
-  const cookieStore = await cookies();
-  for (const name of [PUBLIC_COOKIE, PASS_COOKIE, USER_COOKIE, ADMIN_COOKIE]) {
-    cookieStore.set(name, "", cookieClearOptions());
-  }
 }
 
 // —— 工具 ——
