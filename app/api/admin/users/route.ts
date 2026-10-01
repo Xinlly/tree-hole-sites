@@ -44,8 +44,8 @@ export async function GET() {
   return Response.json({ users: users.map(withoutHash) });
 }
 
-// §4.4：username 1–32 字符合集；密码 ≥6
-export function validateCredentials(username: string, password: string): string | null {
+// §4.4：username 1–32 字符合集；密码 ≥6（文件内本地函数，非路由导出）
+function validateCredentials(username: string, password: string): string | null {
   if (!/^[A-Za-z0-9_.-]{1,32}$/.test(username)) {
     return "invalid username";
   }

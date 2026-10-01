@@ -49,7 +49,7 @@ async function login(pathName, password) {
   });
 }
 
-test("standalone server: auth gate, writing and admin cleanup", async () => {
+test("standalone server: auth gate, scoped writing and admin cleanup", async () => {
   await waitForServer();
 
   const lockedPage = await fetch(`${baseUrl}/`);
@@ -68,7 +68,8 @@ test("standalone server: auth gate, writing and admin cleanup", async () => {
   assert.doesNotMatch(setCookie, /(?:^|;\s*)Secure(?:;|$)/);
   const sessionCookie = setCookie.split(";")[0];
 
-  const messageResponse = await fetch(`${baseUrl}/api/messages`, {
+  // 四层：成员写必须带 ?scope=public
+  const messageResponse = await fetch(`${baseUrl}/api/messages?scope=public`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -78,27 +79,34 @@ test("standalone server: auth gate, writing and admin cleanup", async () => {
   });
   assert.equal(messageResponse.status, 201);
 
-  const entryResponse = await fetch(`${baseUrl}/api/entries`, {
+  // 成员写封存即便带 reply 也被服务端丢弃（reply 管理员独占）
+  const entryResponse = await fetch(`${baseUrl}/api/entries?scope=public`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       cookie: sessionCookie,
     },
-    body: JSON.stringify({ mood: "平静", content: "把心事封存起来", reply: "" }),
+    body: JSON.stringify({ mood: "平静", content: "把心事封存起来", reply: "试图塞入" }),
   });
   assert.equal(entryResponse.status, 201);
 
   const messageList = await (
-    await fetch(`${baseUrl}/api/messages`, { headers: { cookie: sessionCookie } })
+    await fetch(`${baseUrl}/api/messages?scope=public`, {
+      headers: { cookie: sessionCookie },
+    })
   ).json();
   assert.equal(messageList.items[0].nickname, "树洞居民");
   assert.equal(messageList.items[0].content, "今天天气真好");
+  assert.equal(messageList.items[0].scopeKind, "public");
 
   const entryList = await (
-    await fetch(`${baseUrl}/api/entries`, { headers: { cookie: sessionCookie } })
+    await fetch(`${baseUrl}/api/entries?scope=public`, {
+      headers: { cookie: sessionCookie },
+    })
   ).json();
   assert.equal(entryList.items[0].mood, "平静");
   assert.equal(entryList.items[0].content, "把心事封存起来");
+  assert.equal(entryList.items[0].reply, ""); // 塞入的 reply 被丢弃
 
   const adminWrong = await login("/api/admin/unlock", "open-sesame");
   assert.equal(adminWrong.status, 401);
@@ -107,21 +115,35 @@ test("standalone server: auth gate, writing and admin cleanup", async () => {
   assert.equal(adminLogin.status, 200);
   const adminCookie = (adminLogin.headers.get("set-cookie") ?? "").split(";")[0];
 
+  // 跨空间聚合：本库仅公共空间 1 条留言 + 1 条封存
   const items = await (
     await fetch(`${baseUrl}/api/admin/items`, { headers: { cookie: adminCookie } })
   ).json();
   assert.equal(items.messages.length, 1);
   assert.equal(items.entries.length, 1);
 
+  // 删除：新接口由 body 带完整 scope（管理员可信方）
   const deleteMessage = await fetch(
-    `${baseUrl}/api/admin/messages/${items.messages[0].id}`,
-    { method: "DELETE", headers: { cookie: adminCookie } },
+    `${baseUrl}/api/messages/${items.messages[0].id}`,
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json", cookie: adminCookie },
+      body: JSON.stringify({
+        scope: { kind: "public", id: "" },
+      }),
+    },
   );
   assert.equal(deleteMessage.status, 200);
 
   const deleteEntry = await fetch(
-    `${baseUrl}/api/admin/entries/${items.entries[0].id}`,
-    { method: "DELETE", headers: { cookie: adminCookie } },
+    `${baseUrl}/api/entries/${items.entries[0].id}`,
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json", cookie: adminCookie },
+      body: JSON.stringify({
+        scope: { kind: "public", id: "" },
+      }),
+    },
   );
   assert.equal(deleteEntry.status, 200);
 

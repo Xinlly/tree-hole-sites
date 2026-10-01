@@ -2,30 +2,63 @@
 
 import Image from "next/image";
 import {
-  FormEvent,
-  Fragment,
-  ReactNode,
+  useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 
-type StoredEntry = {
+// §7.1：四类相互独立的层；右侧账户入口在三者 + 管理入口间切换
+type ScopeKind = "public" | "pass" | "user";
+type Layer = ScopeKind | "admin";
+
+type ListResponse<T> = {
+  items: T[];
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
+type Message = {
+  id: string;
+  nickname: string;
+  content: string;
+  locked: boolean;
+  createdAt: string;
+  updatedAt?: string;
+};
+
+type Entry = {
   id: string;
   mood: string;
   content: string;
   reply: string;
+  locked: boolean;
   createdAt: string;
+  updatedAt?: string;
 };
 
-type StoredMessage = {
+// 管理端条目额外带空间归属（§6 GET /api/admin/items）
+type AdminMessage = Message & { scopeKind: ScopeKind; scopeId: string };
+type AdminEntry = Entry & { scopeKind: ScopeKind; scopeId: string };
+
+type Account = {
   id: string;
-  nickname: string;
-  content: string;
+  username: string;
+  active: boolean;
+  tokenVersion: number;
   createdAt: string;
 };
 
+type PassSpace = { id: string; createdAt: string };
+
+const SPACE_NAME: Record<ScopeKind, string> = {
+  public: "公共空间",
+  pass: "口令空间",
+  user: "个人空间",
+};
+
+// mood 固定且正向在前（愉悦、幸福排在低落之前）
 const moods = [
   { label: "愉悦", tone: "把这份亮亮的心情好好收进口袋。" },
   { label: "幸福", tone: "愿这一刻被温柔地记住很久。" },
@@ -36,242 +69,42 @@ const moods = [
   { label: "委屈", tone: "你不需要证明这份难受才是真的。" },
 ];
 
-const replies = [
-  "这句话已经被树洞接住了。今晚不用把自己解释得很完整。",
-  "你可以先停在这里。没有人催你立刻变好。",
-  "谢谢你把它放下。那些没说出口的部分，也被好好听见了。",
-  "愿这段心事离开你的肩膀一点点，哪怕只是一点点。",
-  "这里不会评判你。你写下来的这一刻，就已经在照顾自己。",
-  "愿这份幸福被好好收藏，等以后想起来也还是暖的。",
-];
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "long",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
+// 统一的 Morandi 渐变背景（浅粉 · 浅紫 · 浅蓝）
+const MORANDI_GRADIENT =
+  "bg-[radial-gradient(circle_at_12%_12%,rgba(246,196,214,0.48),transparent_30%),radial-gradient(circle_at_82%_18%,rgba(205,202,232,0.48),transparent_29%),radial-gradient(circle_at_76%_82%,rgba(190,216,235,0.5),transparent_34%),linear-gradient(145deg,#f8eef4_0%,#f4edf9_44%,#edf6fb_100%)]";
 
 export default function Home() {
-  const [unlocked, setUnlocked] = useState(false);
+  const [view, setView] = useState<Layer>("public");
+  const [session, setSession] = useState<{
+    public: boolean;
+    admin: boolean;
+  } | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
-  useEffect(() => {
-    fetch("/api/session")
-      .then((response) => response.json())
-      .then((session) => setUnlocked(Boolean(session.unlocked)))
-      .catch(() => setUnlocked(false));
+  const refreshSession = useCallback(async () => {
+    const res = await fetch("/api/session", { cache: "no-store" });
+    const data = (await res.json()) as { unlocked: boolean; admin: boolean };
+    setSession({ public: data.unlocked, admin: data.admin });
   }, []);
 
-  async function handleLogout() {
-    await fetch("/api/logout", { method: "POST" });
-    setUnlocked(false);
-  }
+  useEffect(() => {
+    fetch("/api/session", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data: { unlocked: boolean; admin: boolean }) =>
+        setSession({ public: data.unlocked, admin: data.admin }),
+      )
+      .catch(() => {});
+  }, []);
 
-  if (!unlocked) return <PasswordGate onUnlock={() => setUnlocked(true)} />;
-  return <TreeHole onLogout={handleLogout} />;
-}
-
-function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  async function submitPassword(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setError("");
-    setLoading(true);
-
-    const response = await fetch("/api/unlock", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password }),
-    }).catch(() => null);
-
-    setLoading(false);
-    if (response?.ok) {
-      onUnlock();
-      return;
-    }
-
-    setError("密码不对。树洞还在这里，慢慢来。");
-  }
+  const go = (layer: Layer) => {
+    setView(layer);
+    setMenuOpen(false);
+  };
 
   return (
     <main className="min-h-screen bg-[#f8eef4] text-[#5d5868]">
-      <section className="relative flex min-h-screen items-center justify-center overflow-hidden px-5 py-8">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_16%_20%,rgba(244,196,210,0.48),transparent_30%),radial-gradient(circle_at_82%_18%,rgba(205,202,232,0.5),transparent_32%),radial-gradient(circle_at_76%_84%,rgba(190,216,235,0.5),transparent_34%)]" />
-        <form
-          className="relative w-full max-w-md rounded-lg border border-[#ead8e5] bg-[#fff9fc]/92 p-6 shadow-xl shadow-[#d4b9c9]/20 sm:p-8"
-          onSubmit={submitPassword}
-        >
-          <p className="text-sm text-[#a986a3]">普通浏览器可访问</p>
-          <h1 className="mt-2 text-4xl font-semibold text-[#756a8a]">
-            嘟
-          </h1>
-          <p className="mt-3 leading-7 text-[#7b7481]">
-            输入密码后进入。封存和留言会被安全地保存到服务器，管理员可查看整理。
-          </p>
-
-          <label className="mt-8 block text-sm font-medium" htmlFor="password">
-            输入密码
-          </label>
-          <input
-            autoComplete="current-password"
-            autoFocus
-            className="mt-2 w-full rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 text-lg outline-none transition focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
-            id="password"
-            onChange={(event) => setPassword(event.target.value)}
-            type="password"
-            value={password}
-          />
-
-          {error && (
-            <p className="mt-3 rounded-lg bg-[#f5dce2] px-4 py-3 text-sm text-[#965c6d]">
-              {error}
-            </p>
-          )}
-
-          <button
-            className="mt-5 w-full rounded-lg bg-[#b9addd] px-5 py-3 font-medium text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
-            disabled={loading || !password.trim()}
-            type="submit"
-          >
-            {loading ? "正在验证..." : "进入树洞"}
-          </button>
-        </form>
-      </section>
-    </main>
-  );
-}
-
-function TreeHole({ onLogout }: { onLogout: () => void }) {
-  const [text, setText] = useState("");
-  const [note, setNote] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [mood, setMood] = useState(moods[0].label);
-  const [sealed, setSealed] = useState<StoredEntry | null>(null);
-  const [messageStatus, setMessageStatus] = useState("");
-  const [entryStatus, setEntryStatus] = useState("");
-  const [adminPassword, setAdminPassword] = useState("");
-  const [adminUnlocked, setAdminUnlocked] = useState(false);
-  const [adminStatus, setAdminStatus] = useState("");
-  const [adminEntries, setAdminEntries] = useState<StoredEntry[]>([]);
-  const [adminMessages, setAdminMessages] = useState<StoredMessage[]>([]);
-  const [publicRefreshKey, setPublicRefreshKey] = useState(0);
-
-  const selectedMood = useMemo(
-    () => moods.find((item) => item.label === mood) ?? moods[0],
-    [mood],
-  );
-
-  function refreshPublicLists() {
-    setPublicRefreshKey((value) => value + 1);
-  }
-
-  async function sealEntry() {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const reply = replies[Math.floor(Math.random() * replies.length)];
-
-    setEntryStatus("正在保存...");
-    const response = await fetch("/api/entries", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ content: trimmed, mood, reply }),
-    }).catch(() => null);
-
-    if (!response?.ok) {
-      setEntryStatus("保存失败，请稍后再试。");
-      return;
-    }
-
-    setSealed({
-      id: "",
-      mood,
-      content: trimmed,
-      reply,
-      createdAt: new Date().toISOString(),
-    });
-    setText("");
-    setEntryStatus("已封存到服务器。");
-    refreshPublicLists();
-    if (adminUnlocked) await loadAdminItems();
-  }
-
-  async function sendNote() {
-    const trimmed = note.trim();
-    if (!trimmed) return;
-
-    setMessageStatus("正在保存...");
-    const response = await fetch("/api/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        content: trimmed,
-        nickname: nickname.trim() || "匿名",
-      }),
-    }).catch(() => null);
-
-    if (!response?.ok) {
-      setMessageStatus("保存失败，请稍后再试。");
-      return;
-    }
-
-    setNote("");
-    setMessageStatus("已保存到服务器。");
-    refreshPublicLists();
-    if (adminUnlocked) await loadAdminItems();
-  }
-
-  async function unlockAdmin(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setAdminStatus("正在验证...");
-    const response = await fetch("/api/admin/unlock", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ password: adminPassword }),
-    }).catch(() => null);
-
-    if (!response?.ok) {
-      setAdminStatus("管理员密码不对。");
-      return;
-    }
-
-    setAdminUnlocked(true);
-    setAdminStatus("已进入管理者查看模式。");
-    await loadAdminItems();
-  }
-
-  async function loadAdminItems() {
-    const response = await fetch("/api/admin/items").catch(() => null);
-    if (!response?.ok) return;
-    const body = (await response.json()) as {
-      entries: StoredEntry[];
-      messages: StoredMessage[];
-    };
-    setAdminEntries(body.entries);
-    setAdminMessages(body.messages);
-  }
-
-  async function deleteAdminItem(type: "entries" | "messages", id: string) {
-    const response = await fetch(`/api/admin/${type}/${id}`, {
-      method: "DELETE",
-    }).catch(() => null);
-    if (!response?.ok) {
-      setAdminStatus("删除失败，请稍后再试。");
-      return;
-    }
-    setAdminStatus("已删除。");
-    await loadAdminItems();
-    refreshPublicLists();
-  }
-
-  return (
-    <main className="min-h-screen overflow-hidden bg-[#f8eef4] text-[#5d5868]">
-      <section className="relative min-h-screen px-5 py-6 sm:px-8 lg:px-12">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_12%_12%,rgba(246,196,214,0.48),transparent_30%),radial-gradient(circle_at_82%_18%,rgba(205,202,232,0.48),transparent_29%),radial-gradient(circle_at_76%_82%,rgba(190,216,235,0.5),transparent_34%),linear-gradient(145deg,#f8eef4_0%,#f4edf9_44%,#edf6fb_100%)]" />
+      <section className="relative min-h-screen overflow-hidden px-5 py-6 sm:px-8 lg:px-12">
+        <div className={`absolute inset-0 ${MORANDI_GRADIENT}`} />
 
         <div className="relative mx-auto flex max-w-7xl flex-col gap-6">
           <header className="flex items-center justify-between gap-4">
@@ -283,558 +116,1650 @@ function TreeHole({ onLogout }: { onLogout: () => void }) {
                 嘟
               </h1>
             </div>
-            <button
-              className="rounded-full border border-[#ead8e5] bg-[#fff9fc]/70 px-4 py-2 text-sm text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
-              onClick={onLogout}
-              type="button"
-            >
-              退出
-            </button>
+
+            {/* §7.1 右上角账户导航 */}
+            <div className="relative z-20">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((open) => !open)}
+                className="flex h-10 w-10 items-center justify-center rounded-full border border-[#ead8e5] bg-[#fff9fc]/80 text-lg shadow-sm transition hover:border-[#c7b9e8] hover:bg-white"
+                aria-label="账户与空间切换"
+              >
+                👤
+              </button>
+              {menuOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setMenuOpen(false)}
+                  />
+                  <div className="absolute right-0 z-20 mt-2 w-40 overflow-hidden rounded-lg border border-[#ead8e5] bg-[#fff9fc] shadow-lg">
+                    {(["public", "pass", "user", "admin"] as Layer[]).map(
+                      (layer) => (
+                        <button
+                          key={layer}
+                          type="button"
+                          onClick={() => go(layer)}
+                          className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
+                        >
+                          {layer === "admin"
+                            ? "管理者查看"
+                            : SPACE_NAME[layer]}
+                          {view === layer && <span>✓</span>}
+                        </button>
+                      ),
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </header>
 
-          <div className="grid gap-5 xl:grid-cols-[1.05fr_0.95fr_0.8fr]">
-            <section className="flex min-h-[520px] flex-col rounded-lg border border-[#ead8e5] bg-[#fff9fc]/88 p-4 shadow-xl shadow-[#d4b9c9]/16 sm:p-6">
-              <PanelTitle
-                kicker="服务器封存"
-                title="把今天放进树洞"
-                subtitle="写完后封存，管理员可以在管理者查看模式里整理和删除。"
-                badge={`${text.trim().length} 字`}
-              />
-
-              <div className="mb-4 flex flex-wrap gap-2">
-                {moods.map((item) => (
-                  <button
-                    className={`rounded-full border px-4 py-2 text-sm transition ${
-                      mood === item.label
-                        ? "border-[#b9addd] bg-[#b9addd] text-white"
-                        : "border-[#ead8e5] bg-[#fffafd] text-[#70697a] hover:border-[#c7b9e8]"
-                    }`}
-                    key={item.label}
-                    onClick={() => setMood(item.label)}
-                    type="button"
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-
-              <textarea
-                aria-label="写下你的心事"
-                className="min-h-[260px] flex-1 resize-none rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4 text-lg leading-8 outline-none transition placeholder:text-[#a99dad] focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
-                onChange={(event) => setText(event.target.value)}
-                placeholder="这里可以写开心、幸福、疲惫、秘密，或一句没地方说的话。"
-                value={text}
-              />
-
-              <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm text-[#7b7481]">
-                  {entryStatus || selectedMood.tone}
-                </p>
-                <button
-                  className="rounded-lg bg-[#f0abc0] px-5 py-3 font-medium text-white transition hover:bg-[#e79bb3] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
-                  disabled={!text.trim() || entryStatus === "正在保存..."}
-                  onClick={sealEntry}
-                  type="button"
-                >
-                  封存这一刻
-                </button>
-              </div>
-            </section>
-
-            <section className="grid gap-5">
-              <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/84 p-5 shadow-xl shadow-[#d4b9c9]/12">
-                <h2 className="text-xl font-semibold text-[#756a8a]">
-                  想对我说什么
-                </h2>
-                <p className="mt-1 text-sm text-[#7b7481]">
-                  留下匿名昵称和想说的话，服务器会自动保存写入日期。
-                </p>
-                <label className="mt-4 block text-sm font-medium text-[#70697a]">
-                  匿名昵称
-                </label>
-                <input
-                  aria-label="匿名昵称"
-                  className="mt-2 w-full rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 outline-none transition placeholder:text-[#a99dad] focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
-                  maxLength={24}
-                  onChange={(event) => setNickname(event.target.value)}
-                  placeholder="如：1、小太阳、路过的人"
-                  value={nickname}
-                />
-                <textarea
-                  aria-label="想对我说什么"
-                  className="mt-4 min-h-36 w-full resize-none rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4 leading-7 outline-none transition placeholder:text-[#a99dad] focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
-                  onChange={(event) => setNote(event.target.value)}
-                  placeholder="比如：想对你说一句话。"
-                  value={note}
-                />
-                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm text-[#7b7481]">{messageStatus}</p>
-                  <button
-                    className="rounded-lg bg-[#a9cde6] px-5 py-3 font-medium text-white transition hover:bg-[#95bddb] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
-                    disabled={!note.trim() || messageStatus === "正在保存..."}
-                    onClick={sendNote}
-                    type="button"
-                  >
-                    留给我
-                  </button>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/80 p-5">
-                <h2 className="text-xl font-semibold text-[#756a8a]">
-                  树洞回声
-                </h2>
-                <div className="mt-4 min-h-32 rounded-lg bg-[#f5edf8]/80 p-5">
-                  {sealed ? (
-                    <>
-                      <p className="text-sm text-[#a986a3]">
-                        {sealed.mood} · {formatDate(sealed.createdAt)}
-                      </p>
-                      <p className="mt-4 text-2xl leading-9 text-[#6a6178]">
-                        {sealed.reply}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-lg leading-8 text-[#7b7481]">
-                      写下一段心事后，这里会出现一句只给你的温柔回应。
-                    </p>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            <aside className="grid gap-5">
-              <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/72 p-4">
-                <Image
-                  alt="睡睡小羊和小熊陪伴在树洞旁"
-                  className="h-auto w-full rounded-lg"
-                  height={768}
-                  priority
-                  src="/morandi-companions.png"
-                  width={1152}
-                />
-              </div>
-
-              <InfiniteList<StoredEntry>
-                emptyText="还没有服务器封存。"
-                endpoint="entries"
-                refreshKey={publicRefreshKey}
-                title="最近封存"
-              >
-                {(entry) => (
-                  <article
-                    className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4"
-                  >
-                    <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
-                      <span>{entry.mood}</span>
-                      <time>{formatDate(entry.createdAt)}</time>
-                    </div>
-                    <p className="line-clamp-3 leading-7">{entry.content}</p>
-                  </article>
-                )}
-              </InfiniteList>
-              <InfiniteList<StoredMessage>
-                emptyText="还没有留言。"
-                endpoint="messages"
-                refreshKey={publicRefreshKey}
-                title="留给我的话"
-              >
-                {(message) => (
-                  <article
-                    className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4"
-                  >
-                    <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
-                      <span>{message.nickname}</span>
-                      <time>{formatDate(message.createdAt)}</time>
-                    </div>
-                    <p className="line-clamp-4 leading-7">{message.content}</p>
-                  </article>
-                )}
-              </InfiniteList>
-            </aside>
-          </div>
-
-          <AdminPanel
-            adminEntries={adminEntries}
-            adminMessages={adminMessages}
-            adminPassword={adminPassword}
-            adminStatus={adminStatus}
-            adminUnlocked={adminUnlocked}
-            onDelete={deleteAdminItem}
-            onPasswordChange={setAdminPassword}
-            onSubmit={unlockAdmin}
-          />
+          {session === null ? (
+            <LoadingSpinner label="正在加载…" />
+          ) : view === "admin" ? (
+            <AdminLayer
+              unlocked={session.admin}
+              onSessionRefresh={refreshSession}
+            />
+          ) : (
+            <MemberSpace
+              key={view}
+              kind={view}
+              onSessionRefresh={refreshSession}
+            />
+          )}
         </div>
       </section>
     </main>
   );
 }
 
-function PanelTitle({
-  badge,
-  kicker,
-  subtitle,
-  title,
+// —— §7.2 普通空间：三空间完全一致的主界面 ——
+
+function MemberSpace({
+  kind,
+  onSessionRefresh,
 }: {
-  badge: string;
-  kicker: string;
-  subtitle: string;
-  title: string;
+  kind: ScopeKind;
+  onSessionRefresh: () => Promise<void>;
 }) {
+  // checking=探针判定会话；in=已进入；out=展示对应入口
+  const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
+  const [probeError, setProbeError] = useState("");
+  const [probeTick, setProbeTick] = useState(0);
+  const [messageSeq, setMessageSeq] = useState(0);
+  const [entrySeq, setEntrySeq] = useState(0);
+
+  useEffect(() => {
+    fetch(`/api/messages?scope=${kind}&limit=1`, { cache: "no-store" })
+      .then((res) => {
+        if (res.status === 401) {
+          setAuth("out");
+          return;
+        }
+        if (!res.ok) {
+          setProbeError(`加载失败（${res.status}）`);
+          return;
+        }
+        setAuth("in");
+      })
+      .catch(() => setProbeError("网络错误，请重试"));
+  }, [kind, probeTick]);
+
+  const retryProbe = () => {
+    setProbeError("");
+    setAuth("checking");
+    setProbeTick((tick) => tick + 1);
+  };
+
+  const exit = async () => {
+    const endpoint =
+      kind === "public"
+        ? "/api/logout"
+        : kind === "pass"
+          ? "/api/pass/exit"
+          : "/api/account/logout";
+    await fetch(endpoint, { method: "POST" });
+    await onSessionRefresh();
+    setAuth("out");
+  };
+
+  if (auth === "checking") {
+    return <LoadingSpinner label="正在进入空间…" />;
+  }
+  if (auth === "out") {
+    return (
+      <Gate
+        kind={kind}
+        onEntered={() => {
+          setMessageSeq((n) => n + 1);
+          setEntrySeq((n) => n + 1);
+          setAuth("in");
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p className="text-sm text-[#a986a3]">{kicker}</p>
-        <h2 className="text-2xl font-semibold text-[#756a8a]">{title}</h2>
-        <p className="mt-1 text-sm text-[#7b7481]">{subtitle}</p>
+    <div className="space-y-6">
+      {probeError && (
+        <div className="rounded-lg border border-[#efc8d2] bg-[#fff9fc]/90 p-3 text-center text-sm text-[#965c6d]">
+          {probeError}
+          <button
+            type="button"
+            onClick={retryProbe}
+            className="ml-3 text-[#965c6d] underline"
+          >
+            重试
+          </button>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between rounded-lg border border-[#ead8e5] bg-[#fff9fc]/86 px-5 py-3">
+        <span className="text-sm font-medium text-[#756a8a]">
+          当前：{SPACE_NAME[kind]}
+        </span>
+        <button
+          type="button"
+          onClick={() => void exit()}
+          className="text-sm text-[#a986a3] underline hover:text-[#756a8a]"
+        >
+          退出
+        </button>
       </div>
-      <span className="rounded-full bg-[#b9addd] px-3 py-1 text-sm text-white">
-        {badge}
-      </span>
+
+      <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/72 p-4">
+        <Image
+          alt="睡睡小羊和小熊陪伴在树洞旁"
+          className="h-auto w-full rounded-lg"
+          height={768}
+          priority
+          src="/morandi-companions.png"
+          width={1152}
+        />
+      </div>
+
+      <WriteMessage
+        kind={kind}
+        onPosted={() => setMessageSeq((n) => n + 1)}
+      />
+      <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/82 p-5">
+        <PanelTitle>留给我的话</PanelTitle>
+        <InfiniteList<Message>
+          key={`m-${messageSeq}`}
+          fetchUrl={`/api/messages?scope=${kind}`}
+          emptyText={
+            kind === "pass" ? "该空间还没有内容" : "还没有留言。"
+          }
+          onUnauthorized={() => setAuth("out")}
+          renderItem={(item) => (
+            <MessageCard
+              kind={kind}
+              message={item}
+              onChanged={() => setMessageSeq((n) => n + 1)}
+              onUnauthorized={() => setAuth("out")}
+            />
+          )}
+        />
+      </div>
+
+      <WriteEntry
+        kind={kind}
+        onPosted={() => setEntrySeq((n) => n + 1)}
+      />
+      <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/82 p-5">
+        <PanelTitle>最近封存</PanelTitle>
+        <InfiniteList<Entry>
+          key={`e-${entrySeq}`}
+          fetchUrl={`/api/entries?scope=${kind}`}
+          emptyText={
+            kind === "pass" ? "该空间还没有内容" : "还没有服务器封存。"
+          }
+          onUnauthorized={() => setAuth("out")}
+          renderItem={(item) => (
+            <EntryCard
+              kind={kind}
+              entry={item}
+              onChanged={() => setEntrySeq((n) => n + 1)}
+              onUnauthorized={() => setAuth("out")}
+            />
+          )}
+        />
+      </div>
     </div>
   );
 }
 
-type PageBody<T> = {
-  items: T[];
-  nextCursor: string | null;
-  hasMore: boolean;
-};
-
-const PAGE_LIMIT = 20;
-
-// cursor 游标分页的无限滚动列表：IntersectionObserver 触发加载，
-// 预加载下一页；已加载项按 id 缓存去重。
-function InfiniteList<T extends { id: string }>({
-  children,
-  emptyText,
-  endpoint,
-  refreshKey,
-  title,
+// §7.1 各空间入口门
+function Gate({
+  kind,
+  onEntered,
 }: {
-  children: (item: T) => ReactNode;
-  emptyText: string;
-  endpoint: string;
-  refreshKey: number;
-  title: string;
+  kind: ScopeKind;
+  onEntered: () => void;
 }) {
-  const [retryKey, setRetryKey] = useState(0);
+  const [secret, setSecret] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    setLoading(true);
+    try {
+      let endpoint = "";
+      let body: Record<string, string> = {};
+      if (kind === "public") {
+        endpoint = "/api/unlock";
+        body = { password: secret };
+      } else if (kind === "pass") {
+        endpoint = "/api/pass/unlock";
+        body = { passphrase: secret };
+      } else {
+        endpoint = "/api/account/login";
+        body = { username, password };
+      }
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      // §3.3 口令空间恒 200，无“口令错误”概念
+      if (!res.ok) {
+        if (kind === "public") {
+          setError("密码不对。树洞还在这里，慢慢来。");
+        } else if (kind === "user") {
+          setError("账号或密码错误");
+        } else {
+          setError(`请求失败（${res.status}），请重试`);
+        }
+        return;
+      }
+      onEntered();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <InfiniteListImpl<T>
-      emptyText={emptyText}
-      endpoint={endpoint}
-      key={`${refreshKey}:${retryKey}`}
-      onRetry={() => setRetryKey((value) => value + 1)}
-      title={title}
-    >
-      {children}
-    </InfiniteListImpl>
+    <div className="flex min-h-[68vh] items-center justify-center">
+      <div className="w-full max-w-md rounded-lg border border-[#ead8e5] bg-[#fff9fc]/95 p-6 shadow-xl shadow-[#d4b9c9]/20 sm:p-8">
+        {kind === "public" && (
+          <p className="text-sm text-[#a986a3]">普通浏览器可访问</p>
+        )}
+        <h2 className="mt-2 text-4xl font-semibold text-[#756a8a]">
+          {kind === "public" ? "嘟" : SPACE_NAME[kind]}
+        </h2>
+        <p className="mt-3 leading-7 text-[#7b7481]">
+          {kind === "public"
+            ? "输入密码后进入。封存和留言会被安全地保存到服务器，管理员可查看整理。"
+            : kind === "pass"
+              ? "输入口令进入一间属于这串口令的房间。任意口令都可以进入；若这串口令从无人使用，会看到一间空房间。"
+              : "用账号和密码登录你的个人空间。"}
+        </p>
+
+        {kind === "user" && (
+          <input
+            type="text"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            placeholder="账号"
+            className="mt-6 w-full rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 outline-none transition focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+          />
+        )}
+
+        <label
+          htmlFor="gate-secret"
+          className="mt-6 block text-sm font-medium text-[#70697a]"
+        >
+          {kind === "user" ? "密码" : "输入密码"}
+        </label>
+        <input
+          id="gate-secret"
+          type="password"
+          value={kind === "user" ? password : secret}
+          onChange={(event) =>
+            kind === "user"
+              ? setPassword(event.target.value)
+              : setSecret(event.target.value)
+          }
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void submit();
+          }}
+          placeholder={
+            kind === "user" ? "请输入密码" : kind === "pass" ? "请输入口令" : ""
+          }
+          className="mt-2 w-full rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 text-lg outline-none transition focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+        />
+
+        {error && (
+          <p className="mt-3 rounded-lg bg-[#f5dce2] px-4 py-3 text-sm text-[#965c6d]">
+            {error}
+          </p>
+        )}
+
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={
+            loading ||
+            (kind === "user"
+              ? !username.trim() || !password
+              : kind === "pass"
+                ? false
+                : !secret.trim())
+          }
+          className="mt-5 w-full rounded-lg bg-[#b9addd] px-5 py-3 font-medium text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
+        >
+          {loading ? "正在验证..." : "进入树洞"}
+        </button>
+      </div>
+    </div>
   );
 }
 
-function InfiniteListImpl<T extends { id: string }>({
-  children,
-  emptyText,
-  endpoint,
-  onRetry,
-  title,
+function WriteMessage({
+  kind,
+  onPosted,
 }: {
-  children: (item: T) => ReactNode;
-  emptyText: string;
-  endpoint: string;
-  onRetry: () => void;
-  title: string;
+  kind: ScopeKind;
+  onPosted: () => void;
 }) {
-  const cacheRef = useRef(new Map<string, T>());
-  const [items, setItems] = useState<T[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(true);
-  const [initialLoading, setInitialLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [nickname, setNickname] = useState("");
+  const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const sentinelRef = useRef<HTMLDivElement>(null);
-  const loadingMoreRef = useRef(false);
-  const prefetchRef = useRef<{
-    cursor: string;
-    promise: Promise<PageBody<T>>;
-  } | null>(null);
 
-  const buildUrl = (cursorValue: string | null) =>
-    `/api/${endpoint}?limit=${PAGE_LIMIT}${
-      cursorValue ? `&cursor=${encodeURIComponent(cursorValue)}` : ""
-    }`;
-
-  const fetchPage = (cursorValue: string | null) =>
-    fetch(buildUrl(cursorValue)).then(async (response) => {
-      if (!response.ok) {
-        throw new Error("request failed");
-      }
-      return (await response.json()) as PageBody<T>;
-    });
-
-  const applyPage = (page: PageBody<T>) => {
-    const cache = cacheRef.current;
-    const fresh = page.items.filter((item) => !cache.has(item.id));
-    for (const item of fresh) {
-      cache.set(item.id, item);
-    }
-    setItems((prev) => {
-      const next = [...prev];
-      for (const item of fresh) {
-        if (!next.some((existing) => existing.id === item.id)) {
-          next.push(item);
-        }
-      }
-      return next;
-    });
-    setHasMore(page.hasMore);
-    setCursor(page.hasMore ? page.nextCursor : null);
-    if (page.hasMore && page.nextCursor) {
-      prefetchRef.current = {
-        cursor: page.nextCursor,
-        promise: fetchPage(page.nextCursor),
-      };
-    }
-  };
-
-  // 首次加载：挂载即拉首页（刷新/重试由外层 key 重挂触发）
-  useEffect(() => {
-    let cancelled = false;
-    fetchPage(null)
-      .then((page) => {
-        if (cancelled) return;
-        applyPage(page);
-        setInitialLoading(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setError("加载失败，请稍后再试。");
-        setInitialLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const loadMore = () => {
-    if (loadingMoreRef.current || initialLoading || !hasMore) {
-      return;
-    }
-    const key = cursor;
-    if (!key) {
-      return;
-    }
-    loadingMoreRef.current = true;
-    setLoadingMore(true);
+  const submit = async () => {
+    const text = content.trim();
+    if (!text) return;
+    setSaving(true);
+    setStatus("");
     setError("");
-    const prefetched = prefetchRef.current;
-    const pagePromise =
-      prefetched && prefetched.cursor === key
-        ? prefetched.promise
-        : fetchPage(key);
-    if (prefetched && prefetched.cursor === key) {
-      prefetchRef.current = null;
-    }
-    pagePromise
-      .then((page) => {
-        applyPage(page);
-      })
-      .catch(() => {
-        prefetchRef.current = null;
-        setError("加载失败，请稍后再试。");
-      })
-      .finally(() => {
-        loadingMoreRef.current = false;
-        setLoadingMore(false);
+    try {
+      const res = await fetch(`/api/messages?scope=${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          nickname: nickname.trim(),
+          content: text,
+        }),
       });
-  };
-  const loadMoreRef = useRef(loadMore);
-  useEffect(() => {
-    loadMoreRef.current = loadMore;
-  });
-
-  useEffect(() => {
-    const node = sentinelRef.current;
-    if (!node) {
-      return;
-    }
-    const observer = new IntersectionObserver((observerEntries) => {
-      if (observerEntries[0]?.isIntersecting) {
-        loadMoreRef.current();
+      if (res.status === 401) {
+        setError("登录已失效，请重新进入");
+        return;
       }
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
+      if (!res.ok) {
+        setError("保存失败，请稍后再试。");
+        return;
+      }
+      setNickname("");
+      setContent("");
+      setStatus("已保存到服务器。");
+      onPosted();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <section className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/82 p-5 text-[#5d5868]">
-      <h2 className="text-xl font-semibold text-[#756a8a]">{title}</h2>
-      <div className="mt-4 space-y-3">
-        {initialLoading ? (
-          <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-sm text-[#7b7481]">
-            正在加载...
-          </p>
-        ) : error && items.length === 0 ? (
-          <div className="rounded-lg bg-[#f5dce2] p-4 text-sm text-[#965c6d]">
-            <p>{error}</p>
-            <button
-              className="mt-2 rounded-lg border border-[#efc8d2] px-3 py-1.5 text-[#9c5f72] transition hover:bg-[#fdeff3]"
-              onClick={onRetry}
-              type="button"
-            >
-              重试
-            </button>
-          </div>
-        ) : items.length === 0 ? (
-          <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-sm text-[#7b7481]">
-            {emptyText}
-          </p>
-        ) : (
+    <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/88 p-5 shadow-xl shadow-[#d4b9c9]/12 sm:p-6">
+      <h2 className="text-xl font-semibold text-[#756a8a]">想对我说什么</h2>
+      <p className="mt-1 text-sm text-[#7b7481]">
+        留下匿名昵称和想说的话，服务器会自动保存写入日期。
+      </p>
+
+      <label className="mt-4 block text-sm font-medium text-[#70697a]">
+        匿名昵称
+      </label>
+      <input
+        aria-label="匿名昵称"
+        maxLength={24}
+        value={nickname}
+        onChange={(event) => setNickname(event.target.value)}
+        placeholder="如：1、小太阳、路过的人"
+        className="mt-2 w-full rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 outline-none transition placeholder:text-[#a99dad] focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+      />
+
+      <textarea
+        aria-label="想对我说什么"
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        placeholder="比如：想对你说一句话。"
+        rows={4}
+        className="mt-4 w-full resize-none rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4 leading-7 outline-none transition placeholder:text-[#a99dad] focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+      />
+
+      {status && <p className="mt-3 text-sm text-[#7b7481]">{status}</p>}
+      {error && <p className="mt-3 text-sm text-[#965c6d]">{error}</p>}
+
+      <div className="mt-3 flex justify-end">
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={saving || !content.trim()}
+          className="rounded-lg bg-[#a9cde6] px-5 py-3 font-medium text-white transition hover:bg-[#95bddb] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
+        >
+          {saving ? "正在保存..." : "留给我"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function WriteEntry({
+  kind,
+  onPosted,
+}: {
+  kind: ScopeKind;
+  onPosted: () => void;
+}) {
+  const [mood, setMood] = useState(moods[0].label);
+  const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
+
+  const selectedMood =
+    moods.find((item) => item.label === mood) ?? moods[0];
+
+  const submit = async () => {
+    const text = content.trim();
+    if (!text) return;
+    setSaving(true);
+    setStatus("");
+    setError("");
+    try {
+      // §7.2：成员封存不携带 reply（后端亦丢弃）
+      const res = await fetch(`/api/entries?scope=${kind}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mood, content: text }),
+      });
+      if (res.status === 401) {
+        setError("登录已失效，请重新进入");
+        return;
+      }
+      if (!res.ok) {
+        setError("保存失败，请稍后再试。");
+        return;
+      }
+      setContent("");
+      setStatus("已封存到服务器。");
+      onPosted();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/88 p-5 shadow-xl shadow-[#d4b9c9]/12 sm:p-6">
+      <p className="text-sm text-[#a986a3]">服务器封存</p>
+      <h2 className="mt-1 text-2xl font-semibold text-[#756a8a]">
+        把今天放进树洞
+      </h2>
+      <p className="mt-1 text-sm text-[#7b7481]">
+        写完后封存，管理员可以在管理者查看模式里整理和删除。
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        {moods.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={() => setMood(item.label)}
+            className={`rounded-full border px-4 py-2 text-sm transition ${
+              mood === item.label
+                ? "border-[#b9addd] bg-[#b9addd] text-white"
+                : "border-[#ead8e5] bg-[#fffafd] text-[#70697a] hover:border-[#c7b9e8]"
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <textarea
+        aria-label="写下你的心事"
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        rows={6}
+        placeholder="这里可以写开心、幸福、疲惫、秘密，或一句没地方说的话。"
+        className="mt-4 w-full resize-none rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4 text-lg leading-8 outline-none transition placeholder:text-[#a99dad] focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+      />
+
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-sm text-[#7b7481]">{status || selectedMood.tone}</p>
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={saving || !content.trim()}
+          className="rounded-lg bg-[#f0abc0] px-5 py-3 font-medium text-white transition hover:bg-[#e79bb3] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
+        >
+          {saving ? "正在保存..." : "封存这一刻"}
+        </button>
+      </div>
+
+      {error && <p className="mt-3 text-sm text-[#965c6d]">{error}</p>}
+    </div>
+  );
+}
+
+function MessageCard({
+  kind,
+  message,
+  onChanged,
+  onUnauthorized,
+}: {
+  kind: ScopeKind;
+  message: Message;
+  onChanged: () => void;
+  onUnauthorized: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [nickname, setNickname] = useState(message.nickname);
+  const [content, setContent] = useState(message.content);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleError = (res: Response) => {
+    if (res.status === 401) {
+      onUnauthorized();
+      return "登录已失效";
+    }
+    return `操作失败（${res.status}）`;
+  };
+
+  const save = async () => {
+    const text = content.trim();
+    if (!text) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/messages/${message.id}?scope=${kind}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nickname: nickname.trim(), content: text }),
+        },
+      );
+      if (!res.ok) {
+        setError(handleError(res));
+        if (res.status === 409) onChanged();
+        return;
+      }
+      setEditing(false);
+      onChanged();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lock = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/messages/${message.id}/lock?scope=${kind}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ locked: true }),
+        },
+      );
+      if (res.status === 409) {
+        setError("该内容已锁定");
+        onChanged();
+        return;
+      }
+      if (!res.ok) {
+        setError(handleError(res));
+        return;
+      }
+      onChanged();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4">
+      <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
+        <span>{message.nickname}</span>
+        <time>
+          {formatTime(message.createdAt)}
+          {message.updatedAt ? " · 已编辑" : ""}
+          {message.locked && " · 🔒 已锁定"}
+        </time>
+      </div>
+
+      {editing ? (
+        <>
+          <input
+            type="text"
+            value={nickname}
+            onChange={(event) => setNickname(event.target.value)}
+            maxLength={24}
+            className="mb-2 w-full rounded-lg border border-[#ead8e5] px-3 py-1.5 text-sm outline-none focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+          />
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            rows={3}
+            className="w-full resize-none rounded-lg border border-[#ead8e5] px-3 py-2 text-sm outline-none focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+          />
+        </>
+      ) : (
+        <p className="whitespace-pre-wrap leading-7">{message.content}</p>
+      )}
+
+      {error && <p className="mt-2 text-xs text-[#965c6d]">{error}</p>}
+
+      <div className="mt-3 flex gap-3">
+        {editing ? (
           <>
-            {items.map((item) => (
-              <Fragment key={item.id}>{children(item)}</Fragment>
-            ))}
-            {error ? (
-              <div className="rounded-lg bg-[#f5dce2] p-4 text-sm text-[#965c6d]">
-                <p>{error}</p>
-                <button
-                  className="mt-2 rounded-lg border border-[#efc8d2] px-3 py-1.5 text-[#9c5f72] transition hover:bg-[#fdeff3]"
-                  onClick={loadMore}
-                  type="button"
-                >
-                  重试
-                </button>
-              </div>
-            ) : hasMore ? (
-              <div ref={sentinelRef}>
-                {loadingMore ? (
-                  <p className="p-2 text-center text-sm text-[#7b7481]">
-                    正在加载...
-                  </p>
-                ) : (
-                  <div className="h-1" />
-                )}
-              </div>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy || !content.trim()}
+              className="text-sm text-[#756a8a] underline disabled:opacity-60"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setNickname(message.nickname);
+                setContent(message.content);
+              }}
+              className="text-sm text-[#a986a3] underline"
+            >
+              取消
+            </button>
           </>
+        ) : (
+          !message.locked && (
+            <>
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                disabled={busy}
+                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+              >
+                修改
+              </button>
+              <button
+                type="button"
+                onClick={() => void lock()}
+                disabled={busy}
+                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+              >
+                锁定
+              </button>
+            </>
+          )
         )}
       </div>
-    </section>
+    </article>
   );
+}
+
+function EntryCard({
+  kind,
+  entry,
+  onChanged,
+  onUnauthorized,
+}: {
+  kind: ScopeKind;
+  entry: Entry;
+  onChanged: () => void;
+  onUnauthorized: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [mood, setMood] = useState(entry.mood);
+  const [content, setContent] = useState(entry.content);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleError = (res: Response) => {
+    if (res.status === 401) {
+      onUnauthorized();
+      return "登录已失效";
+    }
+    return `操作失败（${res.status}）`;
+  };
+
+  const save = async () => {
+    const moodText = mood.trim();
+    const text = content.trim();
+    if (!moodText || !text) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/entries/${entry.id}?scope=${kind}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mood: moodText, content: text }),
+        },
+      );
+      if (!res.ok) {
+        setError(handleError(res));
+        if (res.status === 409) onChanged();
+        return;
+      }
+      setEditing(false);
+      onChanged();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lock = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/entries/${entry.id}/lock?scope=${kind}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ locked: true }),
+        },
+      );
+      if (res.status === 409) {
+        setError("该内容已锁定");
+        onChanged();
+        return;
+      }
+      if (!res.ok) {
+        setError(handleError(res));
+        return;
+      }
+      onChanged();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4">
+      <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
+        <span className="rounded-full bg-[#f5edf8] px-3 py-0.5 text-[#756a8a]">
+          {entry.mood}
+        </span>
+        <time>
+          {formatTime(entry.createdAt)}
+          {entry.updatedAt ? " · 已编辑" : ""}
+          {entry.locked && " · 🔒 已锁定"}
+        </time>
+      </div>
+
+      {editing ? (
+        <>
+          <input
+            type="text"
+            value={mood}
+            onChange={(event) => setMood(event.target.value)}
+            maxLength={24}
+            className="mb-2 w-full rounded-lg border border-[#ead8e5] px-3 py-1.5 text-sm outline-none focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+          />
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            rows={4}
+            className="w-full resize-none rounded-lg border border-[#ead8e5] px-3 py-2 text-sm outline-none focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+          />
+        </>
+      ) : (
+        <p className="whitespace-pre-wrap leading-7">{entry.content}</p>
+      )}
+
+      <div className="mt-3 rounded-lg bg-[#f5edf8]/70 p-3">
+        <p className="mb-1 text-xs font-medium text-[#756a8a]">树洞回声</p>
+        {entry.reply ? (
+          <p className="whitespace-pre-wrap text-sm text-[#5d5868]">
+            {entry.reply}
+          </p>
+        ) : (
+          <p className="text-sm text-[#a99dad]">暂无回复</p>
+        )}
+      </div>
+
+      {error && <p className="mt-2 text-xs text-[#965c6d]">{error}</p>}
+
+      <div className="mt-3 flex gap-3">
+        {editing ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy || !mood.trim() || !content.trim()}
+              className="text-sm text-[#756a8a] underline disabled:opacity-60"
+            >
+              保存
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(false);
+                setMood(entry.mood);
+                setContent(entry.content);
+              }}
+              className="text-sm text-[#a986a3] underline"
+            >
+              取消
+            </button>
+          </>
+        ) : (
+          !entry.locked && (
+            <>
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                disabled={busy}
+                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+              >
+                修改
+              </button>
+              <button
+                type="button"
+                onClick={() => void lock()}
+                disabled={busy}
+                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+              >
+                锁定
+              </button>
+            </>
+          )
+        )}
+      </div>
+    </article>
+  );
+}
+
+// —— §7.3 管理员后台 ——
+
+function AdminLayer({
+  unlocked,
+  onSessionRefresh,
+}: {
+  unlocked: boolean;
+  onSessionRefresh: () => Promise<void>;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const unlock = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/unlock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (!res.ok) {
+        setError("管理员密码不对。");
+        return;
+      }
+      await onSessionRefresh();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!unlocked) {
+    return (
+      <div className="flex min-h-[68vh] items-center justify-center">
+        <div className="w-full max-w-md rounded-lg border border-[#ead8e5] bg-[#fff9fc]/95 p-6 shadow-xl shadow-[#d4b9c9]/20 sm:p-8">
+          <h2 className="text-2xl font-semibold text-[#756a8a]">管理者查看</h2>
+          <p className="mt-1 text-sm text-[#7b7481]">
+            输入管理员密码进入后台。
+          </p>
+          <input
+            aria-label="管理员密码"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void unlock();
+            }}
+            placeholder="输入管理员密码"
+            className="mt-4 w-full rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 outline-none transition focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+          />
+          {error && (
+            <p className="mt-3 rounded-lg bg-[#f5dce2] px-4 py-3 text-sm text-[#965c6d]">
+              {error}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void unlock()}
+            disabled={loading || !password.trim()}
+            className="mt-5 w-full rounded-lg bg-[#b9addd] px-5 py-3 font-medium text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
+          >
+            {loading ? "正在验证..." : "进入管理"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return <AdminPanel onSessionRefresh={onSessionRefresh} />;
 }
 
 function AdminPanel({
-  adminEntries,
-  adminMessages,
-  adminPassword,
-  adminStatus,
-  adminUnlocked,
-  onDelete,
-  onPasswordChange,
-  onSubmit,
+  onSessionRefresh,
 }: {
-  adminEntries: StoredEntry[];
-  adminMessages: StoredMessage[];
-  adminPassword: string;
-  adminStatus: string;
-  adminUnlocked: boolean;
-  onDelete: (type: "entries" | "messages", id: string) => void;
-  onPasswordChange: (value: string) => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSessionRefresh: () => Promise<void>;
 }) {
-  return (
-    <section className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/86 p-5 shadow-xl shadow-[#d4b9c9]/12">
-      <h2 className="text-2xl font-semibold text-[#756a8a]">管理者查看</h2>
-      <p className="mt-1 text-sm text-[#7b7481]">
-        管理者可查看所有服务器封存和留言，并逐条删除。
-      </p>
+  const [messages, setMessages] = useState<AdminMessage[]>([]);
+  const [entries, setEntries] = useState<AdminEntry[]>([]);
+  const [passSpaces, setPassSpaces] = useState<PassSpace[]>([]);
+  const [users, setUsers] = useState<Account[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [tab, setTab] = useState<ScopeKind>("public");
+  const [scopeFilter, setScopeFilter] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState("");
 
-      {!adminUnlocked ? (
-        <form className="mt-4 flex flex-col gap-3 sm:flex-row" onSubmit={onSubmit}>
-          <input
-            aria-label="管理员密码"
-            className="min-w-0 flex-1 rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-3 outline-none transition focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
-            onChange={(event) => onPasswordChange(event.target.value)}
-            placeholder="输入管理员密码"
-            type="password"
-            value={adminPassword}
-          />
+  const queryAll = useCallback(async () => {
+    const [itemsRes, usersRes] = await Promise.all([
+      fetch("/api/admin/items", { cache: "no-store" }),
+      fetch("/api/admin/users", { cache: "no-store" }),
+    ]);
+    if (itemsRes.status === 401 || usersRes.status === 401) {
+      await onSessionRefresh();
+      return;
+    }
+    if (!itemsRes.ok || !usersRes.ok) {
+      throw new Error("加载失败，请重试");
+    }
+    const items = (await itemsRes.json()) as {
+      messages: AdminMessage[];
+      entries: AdminEntry[];
+      passSpaces: PassSpace[];
+    };
+    const usersData = (await usersRes.json()) as { users: Account[] };
+    setMessages(items.messages);
+    setEntries(items.entries);
+    setPassSpaces(items.passSpaces);
+    setUsers(usersData.users);
+  }, [onSessionRefresh]);
+
+  const reload = (): Promise<void> => {
+    setLoading(true);
+    setLoadError("");
+    return queryAll()
+      .catch((err: Error) => setLoadError(err.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/admin/items", { cache: "no-store" }),
+      fetch("/api/admin/users", { cache: "no-store" }),
+    ])
+      .then(async ([itemsRes, usersRes]) => {
+        if (itemsRes.status === 401 || usersRes.status === 401) {
+          await onSessionRefresh();
+          return;
+        }
+        if (!itemsRes.ok || !usersRes.ok) {
+          setLoadError("加载失败，请重试");
+          return;
+        }
+        const items = (await itemsRes.json()) as {
+          messages: AdminMessage[];
+          entries: AdminEntry[];
+          passSpaces: PassSpace[];
+        };
+        const usersData = (await usersRes.json()) as { users: Account[] };
+        setMessages(items.messages);
+        setEntries(items.entries);
+        setPassSpaces(items.passSpaces);
+        setUsers(usersData.users);
+      })
+      .catch(() => setLoadError("网络错误，请重试"))
+      .finally(() => setLoading(false));
+  }, [onSessionRefresh]);
+
+  // 管理员 :id 操作：body 必须带完整 scope
+  const scopedBody = (item: { scopeKind: ScopeKind; scopeId: string }) => ({
+    scope: { kind: item.scopeKind, id: item.scopeId },
+  });
+
+  const run = async (
+    url: string,
+    method: string,
+    body: Record<string, unknown>,
+  ) => {
+    setBusy(true);
+    setActionError("");
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.status === 401) {
+        await onSessionRefresh();
+        return;
+      }
+      if (!res.ok) {
+        setActionError(`操作失败（${res.status}）`);
+        return;
+      }
+      reload();
+    } catch {
+      setActionError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleLock = (
+    item: AdminMessage | AdminEntry,
+    entryTarget: boolean,
+  ) => {
+    const base = entryTarget ? "entries" : "messages";
+    void run(`/api/${base}/${item.id}/lock`, "POST", {
+      ...scopedBody(item),
+      locked: !item.locked,
+    });
+  };
+
+  const remove = (item: AdminMessage | AdminEntry, entryTarget: boolean) => {
+    const base = entryTarget ? "entries" : "messages";
+    if (
+      !window.confirm(
+        `确定删除${SPACE_NAME[item.scopeKind]}的这条${entryTarget ? "封存" : "留言"}？`,
+      )
+    ) {
+      return;
+    }
+    void run(`/api/${base}/${item.id}`, "DELETE", scopedBody(item));
+  };
+
+  const reply = (item: AdminEntry) => {
+    const text = window.prompt("写下回复（锁定不影响回复）：", item.reply);
+    if (text === null) return;
+    void run(`/api/entries/${item.id}/reply`, "POST", {
+      ...scopedBody(item),
+      reply: text,
+    });
+  };
+
+  const inView = <T extends { scopeKind: ScopeKind; scopeId: string }>(
+    item: T,
+  ) =>
+    item.scopeKind === tab &&
+    (scopeFilter === "" || item.scopeId === scopeFilter);
+
+  const tabMessages = messages
+    .filter(inView)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  const tabEntries = entries
+    .filter(inView)
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between rounded-lg border border-[#ead8e5] bg-[#fff9fc]/86 px-5 py-3">
+        <span className="text-sm font-medium text-[#756a8a]">
+          当前：管理者查看
+        </span>
+        <button
+          type="button"
+          onClick={() => void onSessionRefresh()}
+          className="text-sm text-[#a986a3] underline hover:text-[#756a8a]"
+        >
+          退出后台
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {(["public", "pass", "user"] as ScopeKind[]).map((spaceKind) => (
           <button
-            className="rounded-lg bg-[#b9addd] px-5 py-3 font-medium text-white transition hover:bg-[#a699cf]"
-            type="submit"
+            key={spaceKind}
+            type="button"
+            onClick={() => {
+              setTab(spaceKind);
+              setScopeFilter("");
+            }}
+            className={`rounded-full border px-4 py-2 text-sm transition ${
+              tab === spaceKind
+                ? "border-[#b9addd] bg-[#b9addd] text-white"
+                : "border-[#ead8e5] bg-[#fffafd] text-[#70697a] hover:border-[#c7b9e8]"
+            }`}
           >
-            进入管理
+            {SPACE_NAME[spaceKind]}
           </button>
-        </form>
-      ) : (
-        <div className="mt-5 grid gap-5 lg:grid-cols-2">
-          <AdminList
-            items={adminEntries}
-            onDelete={(id) => onDelete("entries", id)}
-            title="全部封存"
-            type="entry"
-          />
-          <AdminList
-            items={adminMessages}
-            onDelete={(id) => onDelete("messages", id)}
-            title="全部留言"
-            type="message"
-          />
+        ))}
+      </div>
+
+      {tab === "pass" && (
+        <div className="text-sm text-[#70697a]">
+          <label htmlFor="pass-filter">口令空间：</label>
+          <select
+            id="pass-filter"
+            value={scopeFilter}
+            onChange={(event) => setScopeFilter(event.target.value)}
+            className="rounded-lg border border-[#ead8e5] bg-[#fffafd] px-2 py-1"
+          >
+            <option value="">全部（{passSpaces.length}）</option>
+            {passSpaces.map((space) => (
+              <option key={space.id} value={space.id}>
+                {space.id.slice(0, 8)}…（{formatTime(space.createdAt)}）
+              </option>
+            ))}
+          </select>
+          {passSpaces.length === 0 && (
+            <span className="ml-3 text-[#a986a3]">还没有口令空间</span>
+          )}
         </div>
       )}
-      <p className="mt-3 text-sm text-[#a986a3]">{adminStatus}</p>
+
+      {tab === "user" && (
+        <div className="text-sm text-[#70697a]">
+          <label htmlFor="user-filter">账号空间：</label>
+          <select
+            id="user-filter"
+            value={scopeFilter}
+            onChange={(event) => setScopeFilter(event.target.value)}
+            className="rounded-lg border border-[#ead8e5] bg-[#fffafd] px-2 py-1"
+          >
+            <option value="">全部（{users.length}）</option>
+            {users.map((account) => (
+              <option key={account.id} value={account.id}>
+                {account.username}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {actionError && (
+        <p className="text-sm text-[#965c6d]">{actionError}</p>
+      )}
+
+      {loading ? (
+        <LoadingSpinner label="正在加载全部空间…" />
+      ) : loadError ? (
+        <div className="rounded-xl border border-[#efc8d2] bg-[#f5dce2] p-6 text-center">
+          <p className="text-sm text-[#965c6d]">{loadError}</p>
+          <button
+            type="button"
+            onClick={() => void reload()}
+            className="mt-3 text-sm text-[#965c6d] underline"
+          >
+            重试
+          </button>
+        </div>
+      ) : (
+        <>
+          <section>
+            <p className="mb-2 text-sm font-semibold text-[#756a8a]">
+              留言（{tabMessages.length}）
+            </p>
+            {tabMessages.length === 0 ? (
+              <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-center text-sm text-[#7b7481]">
+                该范围没有留言
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {tabMessages.map((item) => (
+                  <AdminRow
+                    key={item.id}
+                    item={item}
+                    entryTarget={false}
+                    busy={busy}
+                    onToggleLock={() => toggleLock(item, false)}
+                    onDelete={() => remove(item, false)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section>
+            <p className="mb-2 text-sm font-semibold text-[#756a8a]">
+              封存（{tabEntries.length}）
+            </p>
+            {tabEntries.length === 0 ? (
+              <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-center text-sm text-[#7b7481]">
+                该范围没有封存
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {tabEntries.map((item) => (
+                  <AdminRow
+                    key={item.id}
+                    item={item}
+                    entryTarget
+                    busy={busy}
+                    onToggleLock={() => toggleLock(item, true)}
+                    onDelete={() => remove(item, true)}
+                    onReply={() => reply(item)}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      <AccountSection users={users} reload={reload} />
+    </div>
+  );
+}
+
+function AdminRow({
+  item,
+  entryTarget,
+  busy,
+  onToggleLock,
+  onDelete,
+  onReply,
+}: {
+  item: AdminMessage | AdminEntry;
+  entryTarget: boolean;
+  busy: boolean;
+  onToggleLock: () => void;
+  onDelete: () => void;
+  onReply?: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-3">
+      <div className="mb-1 flex items-center justify-between text-xs text-[#a986a3]">
+        <span>
+          {entryTarget
+            ? `心情：${(item as AdminEntry).mood}`
+            : (item as AdminMessage).nickname}
+          {item.locked && " · 🔒"}
+        </span>
+        <span>{formatTime(item.createdAt)}</span>
+      </div>
+      <p className="whitespace-pre-wrap text-sm text-[#5d5868]">
+        {item.content}
+      </p>
+      {entryTarget && (
+        <p className="mt-1 text-xs text-[#a986a3]">
+          回复：{(item as AdminEntry).reply || "暂无回复"}
+        </p>
+      )}
+      <div className="mt-2 flex gap-3">
+        {entryTarget && (
+          <button
+            type="button"
+            onClick={onReply}
+            disabled={busy}
+            className="text-xs text-[#756a8a] underline disabled:opacity-60"
+          >
+            回复
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onToggleLock}
+          disabled={busy}
+          className="text-xs text-[#756a8a] underline disabled:opacity-60"
+        >
+          {item.locked ? "解锁" : "锁定"}
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={busy}
+          className="text-xs text-[#965c6d] underline disabled:opacity-60"
+        >
+          删除
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// §7.3 账号管理（不开放注册，仅此入口）
+function AccountSection({
+  users,
+  reload,
+}: {
+  users: Account[];
+  reload: () => Promise<void>;
+}) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const create = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        setError(
+          res.status === 409
+            ? "用户名已存在"
+            : data?.error ?? `创建失败（${res.status}）`,
+        );
+        return;
+      }
+      setUsername("");
+      setPassword("");
+      await reload();
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const resetPassword = async (account: Account) => {
+    const next = window.prompt(`为 ${account.username} 设置新密码（≥6 位）：`);
+    if (next === null) return;
+    if (next.length < 6) {
+      setError("密码至少 6 位");
+      return;
+    }
+    const res = await fetch(
+      `/api/admin/users/${account.id}/reset-password`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: next }),
+      },
+    );
+    if (!res.ok) {
+      setError(`重置失败（${res.status}）`);
+      return;
+    }
+    setError("");
+    await reload();
+  };
+
+  const toggleActive = async (account: Account) => {
+    const res = await fetch(`/api/admin/users/${account.id}/active`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active: !account.active }),
+    });
+    if (!res.ok) {
+      setError(`操作失败（${res.status}）`);
+      return;
+    }
+    setError("");
+    await reload();
+  };
+
+  return (
+    <section className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/86 p-5 shadow-xl shadow-[#d4b9c9]/12 sm:p-6">
+      <h2 className="text-2xl font-semibold text-[#756a8a]">账号管理</h2>
+
+      <div className="mt-4 flex flex-wrap items-end gap-2">
+        <input
+          type="text"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          placeholder="账号（字母数字 _.-，≤32）"
+          className="rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-2 text-sm outline-none focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+        />
+        <input
+          type="password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          placeholder="初始密码（≥6 位）"
+          className="rounded-lg border border-[#ead8e5] bg-[#fffafd] px-4 py-2 text-sm outline-none focus:border-[#b9addd] focus:ring-4 focus:ring-[#d6c9f2]/35"
+        />
+        <button
+          type="button"
+          onClick={() => void create()}
+          disabled={saving || !username.trim() || password.length < 6}
+          className="rounded-lg bg-[#b9addd] px-4 py-2 text-sm text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
+        >
+          {saving ? "创建中…" : "创建账号"}
+        </button>
+      </div>
+      {error && <p className="mt-3 text-sm text-[#965c6d]">{error}</p>}
+
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-[#ead8e5] text-xs text-[#a986a3]">
+              <th className="py-2 pr-3">账号</th>
+              <th className="py-2 pr-3">状态</th>
+              <th className="py-2 pr-3">令牌版本</th>
+              <th className="py-2 pr-3">创建时间</th>
+              <th className="py-2">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((account) => (
+              <tr key={account.id}>
+                <td className="py-2 pr-3 text-[#5d5868]">
+                  {account.username}
+                </td>
+                <td className="py-2 pr-3">
+                  {account.active ? (
+                    <span className="text-[#7b9e8a]">启用</span>
+                  ) : (
+                    <span className="text-[#b07c8d]">停用</span>
+                  )}
+                </td>
+                <td className="py-2 pr-3 text-[#7b7481]">
+                  {account.tokenVersion}
+                </td>
+                <td className="py-2 pr-3 text-[#7b7481]">
+                  {formatTime(account.createdAt)}
+                </td>
+                <td className="py-2">
+                  <button
+                    type="button"
+                    onClick={() => void resetPassword(account)}
+                    className="mr-3 text-xs text-[#756a8a] underline"
+                  >
+                    重置密码
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void toggleActive(account)}
+                    className="text-xs text-[#756a8a] underline"
+                  >
+                    {account.active ? "停用" : "启用"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {users.length === 0 && (
+              <tr>
+                <td colSpan={5} className="py-4 text-center text-[#a986a3]">
+                  还没有账号
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
 
-function AdminList({
-  items,
-  onDelete,
-  title,
-  type,
+// —— 通用组件（沿用原有 Morandi 结构） ——
+
+function InfiniteList<T extends { id: string }>({
+  fetchUrl,
+  renderItem,
+  emptyText,
+  onUnauthorized,
 }: {
-  items: Array<StoredEntry | StoredMessage>;
-  onDelete: (id: string) => void;
-  title: string;
-  type: "entry" | "message";
+  fetchUrl: string;
+  renderItem: (item: T) => ReactNode;
+  emptyText: string;
+  onUnauthorized?: () => void;
 }) {
+  const [items, setItems] = useState<T[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "error">(
+    "idle",
+  );
+  const [error, setError] = useState("");
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (observerEntries) => {
+        if (observerEntries[0]?.isIntersecting) {
+          setLoadState("idle");
+        }
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (loadState !== "idle") return;
+    if (!hasMore) return;
+    const sentinel = sentinelRef.current;
+    if (sentinel && !isInViewport(sentinel)) return;
+
+    let cancelled = false;
+    setLoadState("loading");
+    setError("");
+
+    const url = cursor
+      ? `${fetchUrl}&cursor=${encodeURIComponent(cursor)}`
+      : fetchUrl;
+
+    fetch(url)
+      .then(async (res) => {
+        if (res.status === 401) {
+          onUnauthorized?.();
+          throw new Error("未登录或登录已失效，请重新进入");
+        }
+        if (!res.ok) {
+          if (res.status === 400) {
+            throw new Error("请求参数有误，请刷新页面重试");
+          }
+          throw new Error(`加载失败（HTTP ${res.status}），请稍后重试`);
+        }
+        return (await res.json()) as ListResponse<T>;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setItems((prev) => {
+          const map = new Map(prev.map((item) => [item.id, item]));
+          for (const item of data.items) {
+            map.set(item.id, item);
+          }
+          return Array.from(map.values());
+        });
+        setCursor(data.nextCursor);
+        setHasMore(data.hasMore);
+        setLoadState("idle");
+      })
+      .catch((fetchError: Error) => {
+        if (cancelled) return;
+        setError(fetchError.message);
+        setLoadState("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasMore, loadState, cursor, error, fetchUrl, onUnauthorized]);
+
   return (
-    <div>
-      <h3 className="font-semibold text-[#756a8a]">{title}</h3>
-      <div className="mt-3 space-y-3">
-        {items.length === 0 ? (
-          <p className="rounded-lg bg-[#f5edf8]/80 p-4 text-sm text-[#7b7481]">
-            暂时没有内容。
-          </p>
-        ) : (
-          items.map((item) => (
-            <article className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-4" key={item.id}>
-              <div className="mb-2 flex items-center justify-between gap-2 text-sm text-[#a986a3]">
-                <span>
-                  {type === "entry"
-                    ? (item as StoredEntry).mood
-                    : (item as StoredMessage).nickname}
-                </span>
-                <time>{formatDate(item.createdAt)}</time>
-              </div>
-              <p className="leading-7">
-                {type === "entry"
-                  ? (item as StoredEntry).content
-                  : (item as StoredMessage).content}
-              </p>
-              <button
-                className="mt-3 rounded-lg border border-[#efc8d2] px-3 py-2 text-sm text-[#9c5f72] transition hover:bg-[#fdeff3]"
-                onClick={() => onDelete(item.id)}
-                type="button"
-              >
-                删除
-              </button>
-            </article>
-          ))
-        )}
-      </div>
+    <div className="space-y-3">
+      {items.map((item) => renderItem(item))}
+
+      {loadState === "loading" && <LoadingSpinner label="正在加载..." />}
+
+      {loadState === "error" && (
+        <div className="rounded-lg border border-[#efc8d2] bg-[#f5dce2] p-4 text-center">
+          <p className="text-sm text-[#965c6d]">{error}</p>
+          <button
+            type="button"
+            onClick={() => setLoadState("idle")}
+            className="mt-2 text-sm text-[#965c6d] underline"
+          >
+            点击重试
+          </button>
+        </div>
+      )}
+
+      {!hasMore && items.length > 0 && (
+        <p className="py-2 text-center text-xs text-[#a986a3]">已经到底啦</p>
+      )}
+      {!hasMore && items.length === 0 && loadState === "idle" && (
+        <p className="rounded-lg bg-[#f5edf8]/80 p-6 text-center text-sm text-[#7b7481]">
+          {emptyText}
+        </p>
+      )}
+
+      <div ref={sentinelRef} />
     </div>
   );
+}
+
+function PanelTitle({ children }: { children: ReactNode }) {
+  return (
+    <h2 className="mb-4 text-xl font-semibold text-[#756a8a]">{children}</h2>
+  );
+}
+
+function LoadingSpinner({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center gap-3 py-12 text-[#756a8a]">
+      <span className="h-5 w-5 animate-spin rounded-full border-2 border-[#d6c9f2] border-t-[#b9addd]" />
+      <span className="text-sm">{label}</span>
+    </div>
+  );
+}
+
+function isInViewport(element: HTMLDivElement) {
+  const rect = element.getBoundingClientRect();
+  return rect.top < window.innerHeight + 200;
+}
+
+function formatTime(iso: string) {
+  const date = new Date(iso);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
