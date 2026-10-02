@@ -166,20 +166,18 @@ export default function Home() {
         <div className={`absolute inset-0 ${MORANDI_GRADIENT}`} />
 
         <div className="relative mx-auto flex max-w-7xl flex-col gap-6">
-          <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-sm text-[#a986a3]">
-                浅粉 · 浅紫 · 浅蓝的明媚树洞
-              </p>
-              <h1
-                ref={titleRef}
-                className="mt-2 text-4xl font-semibold tracking-normal text-[#756a8a] sm:text-6xl"
-              >
-                嘟
-              </h1>
-            </div>
+          <p className="text-sm text-[#a986a3]">
+            浅粉 · 浅紫 · 浅蓝的明媚树洞
+          </p>
+          <header className="flex items-center justify-between gap-4">
+            <h1
+              ref={titleRef}
+              className="text-4xl font-semibold tracking-normal text-[#756a8a] sm:text-6xl"
+            >
+              嘟
+            </h1>
 
-            {/* 统一空间栏：当前位置 + 身份 + 退出 + 切换；“嘟”滑出后转为顶部悬浮 */}
+            {/* 统一空间栏：与“嘟”同线靠右；“嘟”滑出后转为顶部悬浮（同一胶囊、连贯过渡） */}
             <SpaceBar
               view={view}
               session={session}
@@ -212,7 +210,14 @@ export default function Home() {
 }
 
 // —— 统一顶部空间栏：当前层 + 身份 + 退出 + 切换菜单 ——
-// “嘟”在时与其同行靠右；“嘟”滑出后转顶部悬浮条，左侧并入“嘟·空间·身份”，操作仍靠右。
+// “嘟”在时与其同线靠右（小胶囊）；“嘟”滑出后同一胶囊转顶部长条椭圆悬浮，连贯过渡。
+
+// 大圆点（与 cef5ede 同一实心紫圆），用在 空间·身份 以及 嘟·空间 之间
+function SpaceDot() {
+  return (
+    <span className="mx-2 inline-block h-2 w-2 shrink-0 rounded-full bg-[#b9addd]" />
+  );
+}
 
 function SpaceBar({
   view,
@@ -234,7 +239,7 @@ function SpaceBar({
   onExit: () => void;
 }) {
   const isMember = view !== "admin";
-  // 分隔符与页面现有大圆点一致；口令只存哈希给短标，个人给用户名
+  // 口令只存哈希给短标，个人给用户名
   const identity =
     view === "pass" && session?.passId
       ? session.passId.slice(0, 8)
@@ -242,8 +247,6 @@ function SpaceBar({
         ? session.username
         : "";
   const spaceLabel = isMember ? SPACE_NAME[view] : "管理者查看";
-  const currentLabel = identity ? `${spaceLabel}·${identity}` : spaceLabel;
-  const pinnedLabel = `嘟·${currentLabel}`;
 
   const buttons = (
     <>
@@ -289,26 +292,44 @@ function SpaceBar({
     </>
   );
 
-  if (pinned) {
-    return (
-      <div className="fixed inset-x-0 top-0 z-40 border-b border-[#ead8e5] bg-[#fff9fc]/90 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-5 py-2.5 sm:px-8 lg:px-12">
-          <span className="truncate text-sm font-medium text-[#756a8a]">
-            {pinnedLabel}
+  return (
+    <div
+      className={
+        pinned
+          ? "fixed inset-x-0 top-4 z-40 px-5 sm:px-8 lg:px-12"
+          : "relative z-20 self-start"
+      }
+    >
+      <div className={pinned ? "mx-auto max-w-7xl" : undefined}>
+        <div
+          className={`flex items-center rounded-full border border-[#e4d6e6] shadow-sm transition-all duration-300 ease-out ${
+            pinned
+              ? "justify-between gap-3 bg-[#fff9fc]/95 px-4 py-2 backdrop-blur-sm"
+              : "gap-2 bg-[#fff9fc]/86 py-1.5 pl-4 pr-1.5"
+          }`}
+        >
+          <span className="flex min-w-0 items-center text-sm font-medium text-[#756a8a]">
+            {/* “嘟·”前缀：仅悬浮时滑入 */}
+            <span
+              className={`flex items-center overflow-hidden whitespace-nowrap transition-all duration-300 ease-out ${
+                pinned ? "max-w-40 opacity-100" : "max-w-0 opacity-0"
+              }`}
+            >
+              嘟
+              <SpaceDot />
+            </span>
+
+            <span className="truncate">{spaceLabel}</span>
+            {identity && (
+              <>
+                <SpaceDot />
+                <span className="truncate text-[#a986a3]">{identity}</span>
+              </>
+            )}
           </span>
+
           <div className="flex shrink-0 items-center gap-2">{buttons}</div>
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="relative z-20 self-start">
-      <div className="flex items-center gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/86 py-1.5 pl-4 pr-1.5 shadow-sm">
-        <span className="text-sm font-medium text-[#756a8a]">
-          {currentLabel}
-        </span>
-        {buttons}
       </div>
     </div>
   );
