@@ -156,10 +156,10 @@ export default function Home() {
       const a = anchor.getBoundingClientRect();
       const c = content.getBoundingClientRect();
       const du = titleRef.current?.getBoundingClientRect();
-      // q 绑定“嘟”字本身的卷出过程：嘟顶碰视口顶→嘟底离开，0..1 连续交接
-      const duTop = (du ? du.top : a.top) + window.scrollY;
+      // q 绑定“嘟”字卷出全过程：scrollY=0 起步，嘟底完全离开视口顶时 q=1。
+      // 这样一滑动胶囊就开始伸展，到嘟字消失恰好完成，过程更平缓连贯。
       const duBottom = (du ? du.bottom : a.bottom) + window.scrollY;
-      const q = Math.min(1, Math.max(0, (window.scrollY - duTop) / Math.max(1, duBottom - duTop)));
+      const q = Math.min(1, Math.max(0, window.scrollY / Math.max(1, duBottom)));
       const top = Math.max(PIN_TOP, a.top); // 纵向未到阈值跟随锚点，到后锁定 16px
       const left = a.left + (c.left - a.left) * q;
       // 视口宽度不含滚动条：fixed 包含块宽度=clientWidth，否则会把 15px 滚动条算入、挤掉文字
@@ -251,6 +251,7 @@ export default function Home() {
             <MemberSpace
               key={`${view}-${exitSeq}`}
               kind={view}
+              canManage={view === "user" || session.admin}
               onEntered={refreshSession}
             />
           )}
@@ -448,9 +449,11 @@ function SpaceBar({
 
 function MemberSpace({
   kind,
+  canManage,
   onEntered,
 }: {
   kind: ScopeKind;
+  canManage: boolean;
   onEntered?: () => Promise<void> | void;
 }) {
   // checking=探针判定会话；in=已进入；out=展示对应入口
@@ -539,10 +542,12 @@ function MemberSpace({
             kind === "pass" ? "该空间还没有内容" : "还没有留言。"
           }
           onUnauthorized={() => setAuth("out")}
-          renderItem={(item) => (
+          renderItem={(item, controls) => (
             <MessageCard
               kind={kind}
+              canManage={canManage}
               message={item}
+              onLocalChange={(partial) => controls.patch(partial)}
               onChanged={() => setMessageSeq((n) => n + 1)}
               onUnauthorized={() => setAuth("out")}
             />
@@ -563,10 +568,12 @@ function MemberSpace({
             kind === "pass" ? "该空间还没有内容" : "还没有封存的心事。"
           }
           onUnauthorized={() => setAuth("out")}
-          renderItem={(item) => (
+          renderItem={(item, controls) => (
             <EntryCard
               kind={kind}
+              canManage={canManage}
               entry={item}
+              onLocalChange={(partial) => controls.patch(partial)}
               onChanged={() => setEntrySeq((n) => n + 1)}
               onUnauthorized={() => setAuth("out")}
             />
@@ -902,12 +909,16 @@ function WriteEntry({
 
 function MessageCard({
   kind,
+  canManage,
   message,
+  onLocalChange,
   onChanged,
   onUnauthorized,
 }: {
   kind: ScopeKind;
+  canManage: boolean;
   message: Message;
+  onLocalChange?: (partial: Partial<Message>) => void;
   onChanged: () => void;
   onUnauthorized: () => void;
 }) {
@@ -953,8 +964,8 @@ function MessageCard({
     }
   };
 
-  const lock = async () => {
-    if (!window.confirm("锁定后空间成员将无法修改，确定锁定？")) return;
+  const setLock = async (locked: boolean) => {
+    if (locked && !window.confirm("锁定后空间成员将无法修改，确定锁定？")) return;
     setBusy(true);
     setError("");
     try {
@@ -963,19 +974,19 @@ function MessageCard({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ locked: true }),
+          body: JSON.stringify({ locked }),
         },
       );
       if (res.status === 409) {
         setError("该内容已锁定");
-        onChanged();
+        onLocalChange?.({ locked: true });
         return;
       }
       if (!res.ok) {
         setError(handleError(res));
         return;
       }
-      onChanged();
+      onLocalChange?.({ locked, updatedAt: new Date().toISOString() });
     } catch {
       setError("网络错误，请重试");
     } finally {
@@ -1040,23 +1051,25 @@ function MessageCard({
             </button>
           </>
         ) : (
-          !message.locked && (
+          canManage && (
             <>
+              {!message.locked && (
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  disabled={busy}
+                  className={PILL}
+                >
+                  修改
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => setEditing(true)}
+                onClick={() => void setLock(!message.locked)}
                 disabled={busy}
                 className={PILL}
               >
-                修改
-              </button>
-              <button
-                type="button"
-                onClick={() => void lock()}
-                disabled={busy}
-                className={PILL}
-              >
-                锁定
+                {message.locked ? "解锁" : "锁定"}
               </button>
             </>
           )
@@ -1068,12 +1081,16 @@ function MessageCard({
 
 function EntryCard({
   kind,
+  canManage,
   entry,
+  onLocalChange,
   onChanged,
   onUnauthorized,
 }: {
   kind: ScopeKind;
+  canManage: boolean;
   entry: Entry;
+  onLocalChange?: (partial: Partial<Entry>) => void;
   onChanged: () => void;
   onUnauthorized: () => void;
 }) {
@@ -1120,8 +1137,8 @@ function EntryCard({
     }
   };
 
-  const lock = async () => {
-    if (!window.confirm("锁定后空间成员将无法修改，确定锁定？")) return;
+  const setLock = async (locked: boolean) => {
+    if (locked && !window.confirm("锁定后空间成员将无法修改，确定锁定？")) return;
     setBusy(true);
     setError("");
     try {
@@ -1130,19 +1147,19 @@ function EntryCard({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ locked: true }),
+          body: JSON.stringify({ locked }),
         },
       );
       if (res.status === 409) {
         setError("该内容已锁定");
-        onChanged();
+        onLocalChange?.({ locked: true });
         return;
       }
       if (!res.ok) {
         setError(handleError(res));
         return;
       }
-      onChanged();
+      onLocalChange?.({ locked, updatedAt: new Date().toISOString() });
     } catch {
       setError("网络错误，请重试");
     } finally {
@@ -1220,23 +1237,25 @@ function EntryCard({
             </button>
           </>
         ) : (
-          !entry.locked && (
+          canManage && (
             <>
+              {!entry.locked && (
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  disabled={busy}
+                  className={PILL}
+                >
+                  修改
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => setEditing(true)}
+                onClick={() => void setLock(!entry.locked)}
                 disabled={busy}
                 className={PILL}
               >
-                修改
-              </button>
-              <button
-                type="button"
-                onClick={() => void lock()}
-                disabled={busy}
-                className={PILL}
-              >
-                锁定
+                {entry.locked ? "解锁" : "锁定"}
               </button>
             </>
           )
@@ -1335,6 +1354,87 @@ function AdminPanel({
   const [scopeFilter, setScopeFilter] = useState("");
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  // 批量选择：key 前缀 M:（留言）/E:（封存），避免两类 id 撞值
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+
+  const togglePick = (key: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
+  // 批量操作当前 tab+筛选范围内勾选的项；成功即本地更新，不整表 reload
+  const batchRun = async (
+    prefix: "M" | "E",
+    list: Array<AdminMessage | AdminEntry>,
+    action: "lock" | "unlock" | "delete",
+  ) => {
+    const targets = list.filter((item) => picked.has(`${prefix}:${item.id}`));
+    if (targets.length === 0) return;
+    const base = prefix === "M" ? "messages" : "entries";
+    if (
+      action === "delete" &&
+      !window.confirm(`确定删除选中的 ${targets.length} 条？此操作不可撤销。`)
+    ) {
+      return;
+    }
+    setBusy(true);
+    setActionError("");
+    const okIds = new Set<string>();
+    let failed = 0;
+    await Promise.all(
+      targets.map(async (item) => {
+        const scope = { scope: { kind: item.scopeKind, id: item.scopeId } };
+        let res: Response;
+        if (action === "delete") {
+          res = await fetch(`/api/${base}/${item.id}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(scope),
+          });
+        } else {
+          res = await fetch(`/api/${base}/${item.id}/lock`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...scope, locked: action === "lock" }),
+          });
+        }
+        if (res.ok) okIds.add(item.id);
+        else failed += 1;
+      }),
+    );
+    const stamp = new Date().toISOString();
+    if (prefix === "M") {
+      setMessages((prev) =>
+        action === "delete"
+          ? prev.filter((it) => !okIds.has(it.id))
+          : prev.map((it) =>
+              okIds.has(it.id)
+                ? { ...it, locked: action === "lock", updatedAt: stamp }
+                : it,
+            ),
+      );
+    } else {
+      setEntries((prev) =>
+        action === "delete"
+          ? prev.filter((it) => !okIds.has(it.id))
+          : prev.map((it) =>
+              okIds.has(it.id)
+                ? { ...it, locked: action === "lock", updatedAt: stamp }
+                : it,
+            ),
+      );
+    }
+    setPicked((prev) => {
+      const next = new Set(prev);
+      for (const id of okIds) next.delete(`${prefix}:${id}`);
+      return next;
+    });
+    if (failed > 0) setActionError(`${failed} 条操作失败，其余已完成`);
+    setBusy(false);
+  };
 
   const queryAll = useCallback(async () => {
     const [itemsRes, usersRes] = await Promise.all([
@@ -1558,6 +1658,54 @@ function AdminPanel({
         </div>
       ) : (
         <>
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#ead8e5] bg-[#fff9fc]/80 p-3">
+            <span className="text-sm text-[#756a8a]">
+              已选 {picked.size} 条
+            </span>
+            <button
+              type="button"
+              disabled={busy || picked.size === 0}
+              onClick={() => {
+                void batchRun("M", tabMessages, "lock");
+                void batchRun("E", tabEntries, "lock");
+              }}
+              className={PILL}
+            >
+              批量锁定
+            </button>
+            <button
+              type="button"
+              disabled={busy || picked.size === 0}
+              onClick={() => {
+                void batchRun("M", tabMessages, "unlock");
+                void batchRun("E", tabEntries, "unlock");
+              }}
+              className={PILL}
+            >
+              批量解锁
+            </button>
+            <button
+              type="button"
+              disabled={busy || picked.size === 0}
+              onClick={() => {
+                void batchRun("M", tabMessages, "delete");
+                void batchRun("E", tabEntries, "delete");
+              }}
+              className={PILL_DANGER}
+            >
+              批量删除
+            </button>
+            {picked.size > 0 && (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setPicked(new Set())}
+                className="text-xs text-[#a986a3] underline"
+              >
+                清空选择
+              </button>
+            )}
+          </div>
           <section>
             <p className="mb-2 text-sm font-semibold text-[#756a8a]">
               留言（{tabMessages.length}）
@@ -1574,6 +1722,8 @@ function AdminPanel({
                     item={item}
                     entryTarget={false}
                     busy={busy}
+                    checked={picked.has(`M:${item.id}`)}
+                    onTogglePick={() => togglePick(`M:${item.id}`)}
                     onToggleLock={() => toggleLock(item, false)}
                     onDelete={() => remove(item, false)}
                   />
@@ -1598,6 +1748,8 @@ function AdminPanel({
                     item={item}
                     entryTarget
                     busy={busy}
+                    checked={picked.has(`E:${item.id}`)}
+                    onTogglePick={() => togglePick(`E:${item.id}`)}
                     onToggleLock={() => toggleLock(item, true)}
                     onDelete={() => remove(item, true)}
                     onReply={() => reply(item)}
@@ -1618,6 +1770,8 @@ function AdminRow({
   item,
   entryTarget,
   busy,
+  checked,
+  onTogglePick,
   onToggleLock,
   onDelete,
   onReply,
@@ -1625,20 +1779,31 @@ function AdminRow({
   item: AdminMessage | AdminEntry;
   entryTarget: boolean;
   busy: boolean;
+  checked: boolean;
+  onTogglePick: () => void;
   onToggleLock: () => void;
   onDelete: () => void;
   onReply?: () => void;
 }) {
   return (
     <div className="rounded-lg border border-[#ead8e5] bg-[#fffafd] p-3">
-      <div className="mb-1 flex items-center justify-between text-xs text-[#a986a3]">
-        <span>
-          {entryTarget
-            ? `心情：${(item as AdminEntry).mood}`
-            : (item as AdminMessage).nickname}
-          {item.locked && " · 🔒"}
-          {item.scopeKind !== "public" && ` · ${item.scopeId.slice(0, 8)}`}
-        </span>
+      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-[#a986a3]">
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={onTogglePick}
+            aria-label="选择该条"
+            className="h-3.5 w-3.5 accent-[#b9addd]"
+          />
+          <span>
+            {entryTarget
+              ? `心情：${(item as AdminEntry).mood}`
+              : (item as AdminMessage).nickname}
+            {item.locked && " · 🔒"}
+            {item.scopeKind !== "public" && ` · ${item.scopeId.slice(0, 8)}`}
+          </span>
+        </label>
         <span>{formatTime(item.createdAt)}</span>
       </div>
       <p className="whitespace-pre-wrap text-sm text-[#5d5868]">
@@ -1862,7 +2027,7 @@ function InfiniteList<T extends { id: string }>({
   onUnauthorized,
 }: {
   fetchUrl: string;
-  renderItem: (item: T) => ReactNode;
+  renderItem: (item: T, controls: { patch: (partial: Partial<T>) => void; remove: () => void }) => ReactNode;
   emptyText: string;
   onUnauthorized?: () => void;
 }) {
@@ -1959,7 +2124,16 @@ function InfiniteList<T extends { id: string }>({
 
   return (
     <div className="space-y-3">
-      {items.map((item) => renderItem(item))}
+      {items.map((item) =>
+        renderItem(item, {
+          patch: (partial) =>
+            setItems((prev) =>
+              prev.map((it) => (it.id === item.id ? { ...it, ...partial } : it)),
+            ),
+          remove: () =>
+            setItems((prev) => prev.filter((it) => it.id !== item.id)),
+        }),
+      )}
 
       {(initialLoading || loadingMore) && (
         <LoadingSpinner label="正在加载..." />

@@ -210,17 +210,44 @@ test("A3: 同口令两次进入同一集合；异口令隔离", async () => {
 
 // —— A4 ——
 
-test("A4: 成员可改任意留言（含署名），updatedAt 更新", async () => {
-  const jar = await publicJar();
+test("A4: 公共空间成员改留言 → 403；个人空间所有者可改本人留言，updatedAt 更新", async () => {
+  const pubJar = await publicJar();
   await invoke(messagesRoute.POST, {
     method: "POST",
     path: "/api/messages?scope=public",
-    jar,
+    jar: pubJar,
     body: { nickname: "原作者", content: "原文" },
+  });
+  const pubList = await readJson(
+    await invoke(messagesRoute.GET, {
+      path: "/api/messages?scope=public",
+      jar: pubJar,
+    }),
+  );
+  const pubTarget = pubList.items[0];
+
+  // 公共空间成员改 → 403
+  const forbidden = await invoke(messageIdRoute.PATCH, {
+    method: "PATCH",
+    path: `/api/messages/${pubTarget.id}?scope=public`,
+    jar: pubJar,
+    body: { nickname: "改人", content: "想改" },
+    args: argsFor(pubTarget.id),
+  });
+  assert.equal(forbidden.status, 403);
+
+  // 个人空间所有者：建账号 → 登录 → 在本人空间写 → 改
+  const account = await createAccount("alice");
+  const jar = await userJar(account);
+  await invoke(messagesRoute.POST, {
+    method: "POST",
+    path: "/api/messages?scope=user",
+    jar,
+    body: { nickname: "我", content: "我的原文" },
   });
   const list = await readJson(
     await invoke(messagesRoute.GET, {
-      path: "/api/messages?scope=public",
+      path: "/api/messages?scope=user",
       jar,
     }),
   );
@@ -229,7 +256,7 @@ test("A4: 成员可改任意留言（含署名），updatedAt 更新", async () 
 
   const patch = await invoke(messageIdRoute.PATCH, {
     method: "PATCH",
-    path: `/api/messages/${target.id}?scope=public`,
+    path: `/api/messages/${target.id}?scope=user`,
     jar,
     body: { nickname: "改人", content: "被改了" },
     args: argsFor(target.id),
@@ -238,7 +265,7 @@ test("A4: 成员可改任意留言（含署名），updatedAt 更新", async () 
 
   const after = await readJson(
     await invoke(messagesRoute.GET, {
-      path: "/api/messages?scope=public",
+      path: "/api/messages?scope=user",
       jar,
     }),
   );
@@ -248,17 +275,45 @@ test("A4: 成员可改任意留言（含署名），updatedAt 更新", async () 
   assert.equal(after.items[0].id, target.id);
 });
 
-test("A4: 成员可改封存 mood+正文（含他人所写）；携带 reply 被丢弃", async () => {
-  const jar = await passJar("mood-room");
+test("A4: 口令空间成员改封存 → 403；个人空间所有者改本人 mood+正文，成员 reply 仍丢弃", async () => {
+  const pJar = await passJar("mood-room");
   await invoke(entriesRoute.POST, {
     method: "POST",
     path: "/api/entries?scope=pass",
-    jar,
+    jar: pJar,
     body: { mood: "开心", content: "他人封存", reply: "想塞回复" },
+  });
+  const pList = await readJson(
+    await invoke(entriesRoute.GET, {
+      path: "/api/entries?scope=pass",
+      jar: pJar,
+    }),
+  );
+  const pTarget = pList.items[0];
+  assert.equal(pTarget.reply, "");
+
+  // 口令空间成员改 → 403
+  const forbidden = await invoke(entryIdRoute.PATCH, {
+    method: "PATCH",
+    path: `/api/entries/${pTarget.id}?scope=pass`,
+    jar: pJar,
+    body: { mood: "平静", content: "想改" },
+    args: argsFor(pTarget.id),
+  });
+  assert.equal(forbidden.status, 403);
+
+  // 个人空间所有者
+  const account = await createAccount("bob");
+  const jar = await userJar(account);
+  await invoke(entriesRoute.POST, {
+    method: "POST",
+    path: "/api/entries?scope=user",
+    jar,
+    body: { mood: "开心", content: "我的封存", reply: "想塞回复" },
   });
   const list = await readJson(
     await invoke(entriesRoute.GET, {
-      path: "/api/entries?scope=pass",
+      path: "/api/entries?scope=user",
       jar,
     }),
   );
@@ -268,7 +323,7 @@ test("A4: 成员可改封存 mood+正文（含他人所写）；携带 reply 被
 
   const patch = await invoke(entryIdRoute.PATCH, {
     method: "PATCH",
-    path: `/api/entries/${target.id}?scope=pass`,
+    path: `/api/entries/${target.id}?scope=user`,
     jar,
     body: { mood: "平静", content: "改后正文" },
     args: argsFor(target.id),
@@ -277,7 +332,7 @@ test("A4: 成员可改封存 mood+正文（含他人所写）；携带 reply 被
 
   const after = await readJson(
     await invoke(entriesRoute.GET, {
-      path: "/api/entries?scope=pass",
+      path: "/api/entries?scope=user",
       jar,
     }),
   );
@@ -289,73 +344,71 @@ test("A4: 成员可改封存 mood+正文（含他人所写）；携带 reply 被
 
 // —— A5 ——
 
-test("A5: 锁定后可读；成员改/再锁 409；锁持久化；管理员可解锁/改", async () => {
-  const jar = await publicJar();
+test("A5: 公共空间锁定仅管理员；个人空间所有者可锁/再锁409/解锁；锁持久化", async () => {
+  const pubJar = await publicJar();
   await invoke(messagesRoute.POST, {
     method: "POST",
     path: "/api/messages?scope=public",
-    jar,
+    jar: pubJar,
     body: { content: "将被锁" },
   });
   const id = (
     await readJson(
       await invoke(messagesRoute.GET, {
         path: "/api/messages?scope=public",
-        jar,
+        jar: pubJar,
       }),
     )
   ).items[0].id;
 
-  // 成员锁定
-  const lock = await invoke(messageLockRoute.POST, {
+  // 公共空间成员锁定 → 403
+  const memberLock = await invoke(messageLockRoute.POST, {
     method: "POST",
     path: `/api/messages/${id}/lock?scope=public`,
-    jar,
+    jar: pubJar,
     body: { locked: true },
     args: argsFor(id),
   });
-  assert.equal(lock.status, 200);
+  assert.equal(memberLock.status, 403);
+
+  // 管理员锁定
+  const adminLock = await invoke(messageLockRoute.POST, {
+    method: "POST",
+    path: `/api/messages/${id}/lock?scope=public`,
+    jar: await adminJar(),
+    body: { scope: { kind: "public", id: "" }, locked: true },
+    args: argsFor(id),
+  });
+  assert.equal(adminLock.status, 200);
 
   // 仍可读，locked=true 持久化
   const readable = await readJson(
     await invoke(messagesRoute.GET, {
       path: "/api/messages?scope=public",
-      jar,
+      jar: pubJar,
     }),
   );
   assert.equal(readable.items[0].locked, true);
 
-  // 成员再改 → 409
-  const edit = await invoke(messageIdRoute.PATCH, {
+  // 公共空间成员改/解锁 → 403
+  const memberEdit = await invoke(messageIdRoute.PATCH, {
     method: "PATCH",
     path: `/api/messages/${id}?scope=public`,
-    jar,
+    jar: pubJar,
     body: { content: "想改" },
     args: argsFor(id),
   });
-  assert.equal(edit.status, 409);
-
-  // 成员再锁 → 409
-  const relock = await invoke(messageLockRoute.POST, {
-    method: "POST",
-    path: `/api/messages/${id}/lock?scope=public`,
-    jar,
-    body: { locked: true },
-    args: argsFor(id),
-  });
-  assert.equal(relock.status, 409);
-
-  // 成员尝试解锁 → 403
+  assert.equal(memberEdit.status, 403);
   const memberUnlock = await invoke(messageLockRoute.POST, {
     method: "POST",
     path: `/api/messages/${id}/lock?scope=public`,
-    jar,
+    jar: pubJar,
     body: { locked: false },
     args: argsFor(id),
   });
   assert.equal(memberUnlock.status, 403);
 
-  // 管理员解锁（body 带完整 scope）
+  // 管理员解锁并改
   const adminUnlock = await invoke(messageLockRoute.POST, {
     method: "POST",
     path: `/api/messages/${id}/lock?scope=public`,
@@ -364,8 +417,6 @@ test("A5: 锁定后可读；成员改/再锁 409；锁持久化；管理员可�
     args: argsFor(id),
   });
   assert.equal(adminUnlock.status, 200);
-
-  // 管理员可改（此前锁定）
   const adminEdit = await invoke(messageIdRoute.PATCH, {
     method: "PATCH",
     path: `/api/messages/${id}?scope=public`,
@@ -374,6 +425,62 @@ test("A5: 锁定后可读；成员改/再锁 409；锁持久化；管理员可�
     args: argsFor(id),
   });
   assert.equal(adminEdit.status, 200);
+
+  // 个人空间所有者：可锁、再锁409、锁定后改409、可解锁
+  const account = await createAccount("carol");
+  const jar = await userJar(account);
+  await invoke(messagesRoute.POST, {
+    method: "POST",
+    path: "/api/messages?scope=user",
+    jar,
+    body: { content: "我的将被锁" },
+  });
+  const myId = (
+    await readJson(
+      await invoke(messagesRoute.GET, {
+        path: "/api/messages?scope=user",
+        jar,
+      }),
+    )
+  ).items[0].id;
+
+  const myLock = await invoke(messageLockRoute.POST, {
+    method: "POST",
+    path: `/api/messages/${myId}/lock?scope=user`,
+    jar,
+    body: { locked: true },
+    args: argsFor(myId),
+  });
+  assert.equal(myLock.status, 200);
+
+  const myRelock = await invoke(messageLockRoute.POST, {
+    method: "POST",
+    path: `/api/messages/${myId}/lock?scope=user`,
+    jar,
+    body: { locked: true },
+    args: argsFor(myId),
+  });
+  assert.equal(myRelock.status, 409);
+
+  // 锁定后所有者本人改仍被锁拦 → 409
+  const myEdit = await invoke(messageIdRoute.PATCH, {
+    method: "PATCH",
+    path: `/api/messages/${myId}?scope=user`,
+    jar,
+    body: { content: "锁后想改" },
+    args: argsFor(myId),
+  });
+  assert.equal(myEdit.status, 409);
+
+  // 所有者解锁 → 200
+  const myUnlock = await invoke(messageLockRoute.POST, {
+    method: "POST",
+    path: `/api/messages/${myId}/lock?scope=user`,
+    jar,
+    body: { locked: false },
+    args: argsFor(myId),
+  });
+  assert.equal(myUnlock.status, 200);
 });
 
 // —— A6 ——

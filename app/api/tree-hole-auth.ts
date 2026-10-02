@@ -275,6 +275,10 @@ export async function authorizeScopedMutation(
 
   const member = await authorizeMember(request, true);
   if (member.ok) {
+    // 非管理员成员只能改自己的个人空间；公共/口令空间的修改仅管理员
+    if (!member.admin && member.scope.kind !== "user") {
+      return { ok: false, status: 403, error: "forbidden" };
+    }
     return {
       ok: true,
       scope: member.scope,

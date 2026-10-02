@@ -19,12 +19,15 @@ export async function POST(request: Request) {
     if (typeof body.locked !== "boolean") {
       return Response.json({ error: "locked must be boolean" }, { status: 400 });
     }
-    // 成员仅可锁定（locked=true）；解锁 false 仅管理员
-    if (auth.member && body.locked === false) {
+    // 非管理员成员仅在自己的个人空间可锁定/解锁；公共/口令空间锁定仅管理员
+    if (auth.member && auth.scope.kind !== "user") {
       return Response.json({ error: "forbidden" }, { status: 403 });
     }
+    // 个人空间所有者“解锁”需绕过锁校验；“再锁”仍走锁检查以返回 409
+    const bypass = auth.bypassLock
+      || (auth.member && auth.scope.kind === "user" && body.locked === false);
     await setMessageLocked(auth.scope, requestIdFromUrl(request), body.locked, {
-      bypassLock: auth.bypassLock,
+      bypassLock: bypass,
     });
     return Response.json({ ok: true });
   } catch (error) {
