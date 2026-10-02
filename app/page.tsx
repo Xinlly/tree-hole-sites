@@ -1636,91 +1636,112 @@ function InfiniteList<T extends { id: string }>({
   const [items, setItems] = useState<T[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
-  const [loadState, setLoadState] = useState<"idle" | "loading" | "error">(
-    "idle",
-  );
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
+  const [reloadTick, setReloadTick] = useState(0);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const loadingMoreRef = useRef(false);
 
+  const parsePage = async (res: Response): Promise<ListResponse<T>> => {
+    if (res.status === 401) {
+      onUnauthorized?.();
+      throw new Error("__unauthorized__");
+    }
+    if (!res.ok) {
+      throw new Error(`加载失败（HTTP ${res.status}），请稍后重试`);
+    }
+    return (await res.json()) as ListResponse<T>;
+  };
+
+  const mergePage = (page: ListResponse<T>) => {
+    setItems((prev) => {
+      const map = new Map(prev.map((item) => [item.id, item]));
+      for (const item of page.items) map.set(item.id, item);
+      return Array.from(map.values());
+    });
+    setHasMore(page.hasMore);
+    setCursor(page.hasMore ? page.nextCursor : null);
+  };
+
+  // 首载：挂载（或点击重试）无条件拉首页，不依赖哨兵是否在视口内
+  useEffect(() => {
+    let cancelled = false;
+    fetch(fetchUrl)
+      .then((res) => parsePage(res))
+      .then((page) => {
+        if (cancelled) return;
+        mergePage(page);
+        setInitialLoading(false);
+      })
+      .catch((fetchError: Error) => {
+        if (cancelled || fetchError.message === "__unauthorized__") return;
+        setError(fetchError.message);
+        setInitialLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchUrl, reloadTick]);
+
+  const loadMore = () => {
+    if (loadingMoreRef.current || initialLoading || !hasMore) return;
+    const key = cursor;
+    if (!key) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    setError("");
+    fetch(`${fetchUrl}&cursor=${encodeURIComponent(key)}`)
+      .then((res) => parsePage(res))
+      .then((page) => mergePage(page))
+      .catch((fetchError: Error) => {
+        if (fetchError.message !== "__unauthorized__") {
+          setError(fetchError.message);
+        }
+      })
+      .finally(() => {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      });
+  };
+
+  // 哨兵进入视口 → 仅触发“加载更多”（首载不经过这里）
   useEffect(() => {
     const sentinel = sentinelRef.current;
     if (!sentinel) return;
     const observer = new IntersectionObserver(
       (observerEntries) => {
-        if (observerEntries[0]?.isIntersecting) {
-          setLoadState("idle");
-        }
+        if (observerEntries[0]?.isIntersecting) loadMore();
       },
       { rootMargin: "200px" },
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialLoading, hasMore, cursor, fetchUrl]);
 
-  useEffect(() => {
-    if (loadState !== "idle") return;
-    if (!hasMore) return;
-    const sentinel = sentinelRef.current;
-    if (sentinel && !isInViewport(sentinel)) return;
-
-    let cancelled = false;
-    setLoadState("loading");
-    setError("");
-
-    const url = cursor
-      ? `${fetchUrl}&cursor=${encodeURIComponent(cursor)}`
-      : fetchUrl;
-
-    fetch(url)
-      .then(async (res) => {
-        if (res.status === 401) {
-          onUnauthorized?.();
-          throw new Error("未登录或登录已失效，请重新进入");
-        }
-        if (!res.ok) {
-          if (res.status === 400) {
-            throw new Error("请求参数有误，请刷新页面重试");
-          }
-          throw new Error(`加载失败（HTTP ${res.status}），请稍后重试`);
-        }
-        return (await res.json()) as ListResponse<T>;
-      })
-      .then((data) => {
-        if (cancelled) return;
-        setItems((prev) => {
-          const map = new Map(prev.map((item) => [item.id, item]));
-          for (const item of data.items) {
-            map.set(item.id, item);
-          }
-          return Array.from(map.values());
-        });
-        setCursor(data.nextCursor);
-        setHasMore(data.hasMore);
-        setLoadState("idle");
-      })
-      .catch((fetchError: Error) => {
-        if (cancelled) return;
-        setError(fetchError.message);
-        setLoadState("error");
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [hasMore, loadState, cursor, error, fetchUrl, onUnauthorized]);
+  const showEmpty =
+    !initialLoading && !loadingMore && items.length === 0 && !error;
 
   return (
     <div className="space-y-3">
       {items.map((item) => renderItem(item))}
 
-      {loadState === "loading" && <LoadingSpinner label="正在加载..." />}
+      {(initialLoading || loadingMore) && (
+        <LoadingSpinner label="正在加载..." />
+      )}
 
-      {loadState === "error" && (
+      {error && (
         <div className="rounded-lg border border-[#efc8d2] bg-[#f5dce2] p-4 text-center">
           <p className="text-sm text-[#965c6d]">{error}</p>
           <button
             type="button"
-            onClick={() => setLoadState("idle")}
+            onClick={() => {
+              setError("");
+              setInitialLoading(true);
+              setReloadTick((tick) => tick + 1);
+            }}
             className="mt-2 text-sm text-[#965c6d] underline"
           >
             点击重试
@@ -1731,7 +1752,7 @@ function InfiniteList<T extends { id: string }>({
       {!hasMore && items.length > 0 && (
         <p className="py-2 text-center text-xs text-[#a986a3]">已经到底啦</p>
       )}
-      {!hasMore && items.length === 0 && loadState === "idle" && (
+      {showEmpty && (
         <p className="rounded-lg bg-[#f5edf8]/80 p-6 text-center text-sm text-[#7b7481]">
           {emptyText}
         </p>
@@ -1755,11 +1776,6 @@ function LoadingSpinner({ label }: { label: string }) {
       <span className="text-sm">{label}</span>
     </div>
   );
-}
-
-function isInViewport(element: HTMLDivElement) {
-  const rect = element.getBoundingClientRect();
-  return rect.top < window.innerHeight + 200;
 }
 
 function formatTime(iso: string) {
