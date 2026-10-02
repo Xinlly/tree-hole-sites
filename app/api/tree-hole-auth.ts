@@ -140,6 +140,22 @@ export async function clearUserCookie() {
   cookieStore.set(USER_COOKIE, "", cookieClearOptions());
 }
 
+// 顶部空间栏身份摘要：口令只存哈希无法还原明文（给短 id），个人给真实用户名。
+export async function getSessionIdentity(): Promise<{
+  passId: string | null;
+  username: string | null;
+}> {
+  const cookieStore = await cookies();
+  const passId = cookieStore.get(PASS_COOKIE)?.value ?? null;
+  let username: string | null = null;
+  const userToken = cookieStore.get(USER_COOKIE)?.value;
+  if (userToken) {
+    const account = await verifyUserToken(userToken);
+    if (account) username = account.username;
+  }
+  return { passId, username };
+}
+
 // §3.4：SIGN_SECRET 缺则用管理员口令 SHA-256 派生
 async function getSignSecret(): Promise<Uint8Array> {
   const configured = process.env.TREE_HOLE_SIGN_SECRET;

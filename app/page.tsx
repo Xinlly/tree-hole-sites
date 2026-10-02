@@ -52,6 +52,13 @@ type Account = {
 
 type PassSpace = { id: string; createdAt: string };
 
+type SessionInfo = {
+  public: boolean;
+  admin: boolean;
+  passId: string | null;
+  username: string | null;
+};
+
 const SPACE_NAME: Record<ScopeKind, string> = {
   public: "公共空间",
   pass: "口令空间",
@@ -73,25 +80,50 @@ const moods = [
 const MORANDI_GRADIENT =
   "bg-[radial-gradient(circle_at_12%_12%,rgba(246,196,214,0.48),transparent_30%),radial-gradient(circle_at_82%_18%,rgba(205,202,232,0.48),transparent_29%),radial-gradient(circle_at_76%_82%,rgba(190,216,235,0.5),transparent_34%),linear-gradient(145deg,#f8eef4_0%,#f4edf9_44%,#edf6fb_100%)]";
 
+// 统一操作按钮：柔和小药丸（替代旧的文字下划线链接）
+const PILL =
+  "rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50";
+const PILL_PRIMARY =
+  "rounded-full bg-[#b9addd] px-3 py-1 text-xs text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:opacity-50";
+
 export default function Home() {
   const [view, setView] = useState<Layer>("public");
-  const [session, setSession] = useState<{
-    public: boolean;
-    admin: boolean;
-  } | null>(null);
+  const [session, setSession] = useState<SessionInfo | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [exitSeq, setExitSeq] = useState(0);
 
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/session", { cache: "no-store" });
-    const data = (await res.json()) as { unlocked: boolean; admin: boolean };
-    setSession({ public: data.unlocked, admin: data.admin });
+    const data = (await res.json()) as {
+      unlocked: boolean;
+      admin: boolean;
+      passId: string | null;
+      username: string | null;
+    };
+    setSession({
+      public: data.unlocked,
+      admin: data.admin,
+      passId: data.passId,
+      username: data.username,
+    });
   }, []);
 
   useEffect(() => {
     fetch("/api/session", { cache: "no-store" })
       .then((res) => res.json())
-      .then((data: { unlocked: boolean; admin: boolean }) =>
-        setSession({ public: data.unlocked, admin: data.admin }),
+      .then(
+        (data: {
+          unlocked: boolean;
+          admin: boolean;
+          passId: string | null;
+          username: string | null;
+        }) =>
+          setSession({
+            public: data.unlocked,
+            admin: data.admin,
+            passId: data.passId,
+            username: data.username,
+          }),
       )
       .catch(() => {});
   }, []);
@@ -101,13 +133,26 @@ export default function Home() {
     setMenuOpen(false);
   };
 
+  // 退出当前成员空间：调对应端点 → 刷新会话 → 用 key 变化强制 MemberSpace 重挂载显示入口
+  const exitCurrent = async () => {
+    const endpoint =
+      view === "public"
+        ? "/api/logout"
+        : view === "pass"
+          ? "/api/pass/exit"
+          : "/api/account/logout";
+    await fetch(endpoint, { method: "POST" });
+    await refreshSession();
+    setExitSeq((n) => n + 1);
+  };
+
   return (
     <main className="min-h-screen bg-[#f8eef4] text-[#5d5868]">
       <section className="relative min-h-screen overflow-hidden px-5 py-6 sm:px-8 lg:px-12">
         <div className={`absolute inset-0 ${MORANDI_GRADIENT}`} />
 
         <div className="relative mx-auto flex max-w-7xl flex-col gap-6">
-          <header className="flex items-center justify-between gap-4">
+          <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <p className="text-sm text-[#a986a3]">
                 浅粉 · 浅紫 · 浅蓝的明媚树洞
@@ -117,42 +162,16 @@ export default function Home() {
               </h1>
             </div>
 
-            {/* §7.1 右上角账户导航 */}
-            <div className="relative z-20">
-              <button
-                type="button"
-                onClick={() => setMenuOpen((open) => !open)}
-                className="flex h-10 w-10 items-center justify-center rounded-full border border-[#ead8e5] bg-[#fff9fc]/80 text-lg shadow-sm transition hover:border-[#c7b9e8] hover:bg-white"
-                aria-label="账户与空间切换"
-              >
-                👤
-              </button>
-              {menuOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={() => setMenuOpen(false)}
-                  />
-                  <div className="absolute right-0 z-20 mt-2 w-40 overflow-hidden rounded-lg border border-[#ead8e5] bg-[#fff9fc] shadow-lg">
-                    {(["public", "pass", "user", "admin"] as Layer[]).map(
-                      (layer) => (
-                        <button
-                          key={layer}
-                          type="button"
-                          onClick={() => go(layer)}
-                          className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
-                        >
-                          {layer === "admin"
-                            ? "管理者查看"
-                            : SPACE_NAME[layer]}
-                          {view === layer && <span>✓</span>}
-                        </button>
-                      ),
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+            {/* 统一空间栏：当前位置 + 身份 + 退出 + 切换，一个元素回答“我在哪/怎么切” */}
+            <SpaceBar
+              view={view}
+              session={session}
+              menuOpen={menuOpen}
+              onToggleMenu={() => setMenuOpen((open) => !open)}
+              onCloseMenu={() => setMenuOpen(false)}
+              onGo={go}
+              onExit={() => void exitCurrent()}
+            />
           </header>
 
           {session === null ? (
@@ -164,9 +183,8 @@ export default function Home() {
             />
           ) : (
             <MemberSpace
-              key={view}
+              key={`${view}-${exitSeq}`}
               kind={view}
-              onSessionRefresh={refreshSession}
             />
           )}
         </div>
@@ -175,14 +193,90 @@ export default function Home() {
   );
 }
 
+// —— 统一顶部空间栏：当前层 + 身份短标 + 退出 + 切换菜单 ——
+
+function SpaceBar({
+  view,
+  session,
+  menuOpen,
+  onToggleMenu,
+  onCloseMenu,
+  onGo,
+  onExit,
+}: {
+  view: Layer;
+  session: SessionInfo | null;
+  menuOpen: boolean;
+  onToggleMenu: () => void;
+  onCloseMenu: () => void;
+  onGo: (layer: Layer) => void;
+  onExit: () => void;
+}) {
+  const isMember = view !== "admin";
+  const identity =
+    view === "pass" && session?.passId
+      ? ` #${session.passId.slice(0, 8)}`
+      : view === "user" && session?.username
+        ? ` · ${session.username}`
+        : "";
+  const currentLabel = isMember
+    ? `${SPACE_NAME[view]}${identity}`
+    : "管理者查看";
+
+  return (
+    <div className="relative z-20 self-start">
+      <div className="flex items-center gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/86 py-1.5 pl-4 pr-1.5 shadow-sm">
+        <span className="h-2 w-2 rounded-full bg-[#b9addd]" />
+        <span className="text-sm font-medium text-[#756a8a]">
+          {currentLabel}
+        </span>
+        {isMember && (
+          <button type="button" onClick={onExit} className={PILL}>
+            退出
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onToggleMenu}
+          className="flex items-center gap-1 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
+          aria-label="切换空间"
+          aria-expanded={menuOpen}
+        >
+          切换
+          <span className={`transition ${menuOpen ? "rotate-180" : ""}`}>
+            ▾
+          </span>
+        </button>
+      </div>
+
+      {menuOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={onCloseMenu} />
+          <div className="absolute right-0 z-20 mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
+            {(["public", "pass", "user", "admin"] as Layer[]).map((layer) => (
+              <button
+                key={layer}
+                type="button"
+                onClick={() => onGo(layer)}
+                className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
+              >
+                {layer === "admin" ? "管理者查看" : SPACE_NAME[layer]}
+                {view === layer && <span className="text-[#b9addd]">✓</span>}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // —— §7.2 普通空间：三空间完全一致的主界面 ——
 
 function MemberSpace({
   kind,
-  onSessionRefresh,
 }: {
   kind: ScopeKind;
-  onSessionRefresh: () => Promise<void>;
 }) {
   // checking=探针判定会话；in=已进入；out=展示对应入口
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
@@ -211,18 +305,6 @@ function MemberSpace({
     setProbeError("");
     setAuth("checking");
     setProbeTick((tick) => tick + 1);
-  };
-
-  const exit = async () => {
-    const endpoint =
-      kind === "public"
-        ? "/api/logout"
-        : kind === "pass"
-          ? "/api/pass/exit"
-          : "/api/account/logout";
-    await fetch(endpoint, { method: "POST" });
-    await onSessionRefresh();
-    setAuth("out");
   };
 
   if (auth === "checking") {
@@ -255,19 +337,6 @@ function MemberSpace({
           </button>
         </div>
       )}
-
-      <div className="flex items-center justify-between rounded-lg border border-[#ead8e5] bg-[#fff9fc]/86 px-5 py-3">
-        <span className="text-sm font-medium text-[#756a8a]">
-          当前：{SPACE_NAME[kind]}
-        </span>
-        <button
-          type="button"
-          onClick={() => void exit()}
-          className="text-sm text-[#a986a3] underline hover:text-[#756a8a]"
-        >
-          退出
-        </button>
-      </div>
 
       <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/72 p-4">
         <Image
@@ -770,17 +839,9 @@ function MessageCard({
 
       {error && <p className="mt-2 text-xs text-[#965c6d]">{error}</p>}
 
-      <div className="mt-3 flex gap-3">
+      <div className="mt-2.5 flex justify-end gap-2 border-t border-[#f1e7f0] pt-2.5">
         {editing ? (
           <>
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={busy || !content.trim()}
-              className="text-sm text-[#756a8a] underline disabled:opacity-60"
-            >
-              保存
-            </button>
             <button
               type="button"
               onClick={() => {
@@ -788,9 +849,17 @@ function MessageCard({
                 setNickname(message.nickname);
                 setContent(message.content);
               }}
-              className="text-sm text-[#a986a3] underline"
+              className={PILL}
             >
               取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy || !content.trim()}
+              className={PILL_PRIMARY}
+            >
+              保存
             </button>
           </>
         ) : (
@@ -800,7 +869,7 @@ function MessageCard({
                 type="button"
                 onClick={() => setEditing(true)}
                 disabled={busy}
-                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+                className={PILL}
               >
                 修改
               </button>
@@ -808,7 +877,7 @@ function MessageCard({
                 type="button"
                 onClick={() => void lock()}
                 disabled={busy}
-                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+                className={PILL}
               >
                 锁定
               </button>
@@ -950,17 +1019,9 @@ function EntryCard({
 
       {error && <p className="mt-2 text-xs text-[#965c6d]">{error}</p>}
 
-      <div className="mt-3 flex gap-3">
+      <div className="mt-2.5 flex justify-end gap-2 border-t border-[#f1e7f0] pt-2.5">
         {editing ? (
           <>
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={busy || !mood.trim() || !content.trim()}
-              className="text-sm text-[#756a8a] underline disabled:opacity-60"
-            >
-              保存
-            </button>
             <button
               type="button"
               onClick={() => {
@@ -968,9 +1029,17 @@ function EntryCard({
                 setMood(entry.mood);
                 setContent(entry.content);
               }}
-              className="text-sm text-[#a986a3] underline"
+              className={PILL}
             >
               取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void save()}
+              disabled={busy || !mood.trim() || !content.trim()}
+              className={PILL_PRIMARY}
+            >
+              保存
             </button>
           </>
         ) : (
@@ -980,7 +1049,7 @@ function EntryCard({
                 type="button"
                 onClick={() => setEditing(true)}
                 disabled={busy}
-                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+                className={PILL}
               >
                 修改
               </button>
@@ -988,7 +1057,7 @@ function EntryCard({
                 type="button"
                 onClick={() => void lock()}
                 disabled={busy}
-                className="text-sm text-[#756a8a] underline disabled:opacity-60"
+                className={PILL}
               >
                 锁定
               </button>
