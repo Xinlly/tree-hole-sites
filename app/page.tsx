@@ -97,8 +97,8 @@ export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [exitSeq, setExitSeq] = useState(0);
   // 胶囊几何：q=卷出比例，top/left/right 为 fixed 定位的连续插值结果
-  const [bar, setBar] = useState<{ q: number; top: number; left: number; right: number }>(
-    { q: 0, top: 0, left: 0, right: 0 },
+  const [bar, setBar] = useState<BarGeometry>(
+    { q: 0, top: 0, left: 0, right: 0, h: 48 },
   );
   const titleRef = useRef<HTMLHeadingElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -155,22 +155,53 @@ export default function Home() {
       if (!anchor || !content) return;
       const a = anchor.getBoundingClientRect();
       const c = content.getBoundingClientRect();
-      const du = titleRef.current?.getBoundingClientRect();
+      // 测量前先清掉上一帧的缩放，避免 transform 污染 getBoundingClientRect（反馈漂移）
+      const duEl = titleRef.current;
+      if (duEl && duEl.style.transform) duEl.style.transform = "";
+      const du = duEl?.getBoundingClientRect();
       // q 绑定“嘟”字卷出全过程：scrollY=0 起步，嘟底完全离开视口顶时 q=1。
       // 这样一滑动胶囊就开始伸展，到嘟字消失恰好完成，过程更平缓连贯。
       const duBottom = (du ? du.bottom : a.bottom) + window.scrollY;
-      const q = Math.min(1, Math.max(0, window.scrollY / Math.max(1, duBottom)));
-      const top = Math.max(PIN_TOP, a.top); // 纵向未到阈值跟随锚点，到后锁定 16px
-      const left = a.left + (c.left - a.left) * q;
-      // 视口宽度不含滚动条：fixed 包含块宽度=clientWidth，否则会把 15px 滚动条算入、挤掉文字
+      const s = window.scrollY;
+      // 覆盖式过渡：p1 前胶囊快速移到“嘟”右侧；p1→p2 慢慢向左扫过嘟并盖住。
+      // p 以嘟底为基准：p1=.22（到达嘟右侧），p2=.5（完全盖住、钉顶）。
+      const p1 = duBottom * 0.22;
+      const p2 = duBottom * 0.5;
+      const duRight = du ? du.right : a.left;
+      const duLeft = du ? du.left : c.left;
+      let left: number;
+      let ingest = 0;
+      if (s <= p1) {
+        // 阶段1：左缘从收起位快速到嘟右侧+10
+        const t = p1 > 0 ? s / p1 : 1;
+        left = a.left + (duRight + 10 - a.left) * t;
+      } else if (s < p2) {
+        // 阶段2：扫过嘟（吞入进度 ingest 0→1）
+        ingest = (s - p1) / (p2 - p1);
+        left = duRight + 10 + (duLeft - (duRight + 10)) * ingest;
+      } else {
+        ingest = 1;
+        left = c.left;
+      }
+      // 覆盖完成前与嘟同线（跟随锚点），完成后钉到 16
+      const top = ingest >= 1 ? PIN_TOP : a.top;
       const viewportW = document.documentElement.clientWidth;
-      const right = viewportW - a.right + (c.right - a.right) * q;
+      const fixedRight = viewportW - a.right;
+      // 真实胶囊高度：读取已渲染的 fixed 栏；首帧未就绪时回退量尺高度
+      const liveBar = document.querySelector('.fixed.z-50');
+      const barH = liveBar ? liveBar.getBoundingClientRect().height : a.height;
+      // 页面标题随吞入进度轻微缩小（向左收缩），胶囊左缘同时扫过覆盖
+      if (titleRef.current) {
+        titleRef.current.style.transformOrigin = "left center";
+        titleRef.current.style.transform = `scale(${1 - 0.22 * ingest})`;
+      }
       setBar((prev) =>
-        Math.abs(prev.q - q) > 0.001 ||
+        Math.abs(prev.q - ingest) > 0.001 ||
         Math.abs(prev.top - top) > 0.5 ||
         Math.abs(prev.left - left) > 0.5 ||
-        Math.abs(prev.right - right) > 0.5
-          ? { q, top, left, right }
+        Math.abs(prev.right - fixedRight) > 0.5 ||
+        Math.abs(prev.h - barH) > 0.5
+          ? { q: ingest, top, left, right: fixedRight, h: barH }
           : prev,
       );
     };
@@ -245,6 +276,7 @@ export default function Home() {
           ) : view === "admin" ? (
             <AdminLayer
               unlocked={session.admin}
+              barGeometry={bar}
               onSessionRefresh={refreshSession}
             />
           ) : (
@@ -330,7 +362,7 @@ function BarSizerContent({
   );
 }
 
-type BarGeometry = { q: number; top: number; left: number; right: number };
+type BarGeometry = { q: number; top: number; left: number; right: number; h: number };
 
 function SpaceBar({
   view,
@@ -548,6 +580,7 @@ function MemberSpace({
               canManage={canManage}
               message={item}
               onLocalChange={(partial) => controls.patch(partial)}
+              onDelete={() => controls.remove()}
               onChanged={() => setMessageSeq((n) => n + 1)}
               onUnauthorized={() => setAuth("out")}
             />
@@ -574,6 +607,7 @@ function MemberSpace({
               canManage={canManage}
               entry={item}
               onLocalChange={(partial) => controls.patch(partial)}
+              onDelete={() => controls.remove()}
               onChanged={() => setEntrySeq((n) => n + 1)}
               onUnauthorized={() => setAuth("out")}
             />
@@ -912,6 +946,7 @@ function MessageCard({
   canManage,
   message,
   onLocalChange,
+  onDelete,
   onChanged,
   onUnauthorized,
 }: {
@@ -919,6 +954,7 @@ function MessageCard({
   canManage: boolean;
   message: Message;
   onLocalChange?: (partial: Partial<Message>) => void;
+  onDelete?: () => void;
   onChanged: () => void;
   onUnauthorized: () => void;
 }) {
@@ -987,6 +1023,27 @@ function MessageCard({
         return;
       }
       onLocalChange?.({ locked, updatedAt: new Date().toISOString() });
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeSelf = async () => {
+    if (!window.confirm("确定删除这条留言？此操作不可撤销。")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/messages/${message.id}?scope=${kind}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        setError(handleError(res));
+        return;
+      }
+      onDelete?.();
     } catch {
       setError("网络错误，请重试");
     } finally {
@@ -1071,6 +1128,14 @@ function MessageCard({
               >
                 {message.locked ? "解锁" : "锁定"}
               </button>
+              <button
+                type="button"
+                onClick={() => void removeSelf()}
+                disabled={busy}
+                className={PILL_DANGER}
+              >
+                删除
+              </button>
             </>
           )
         )}
@@ -1084,6 +1149,7 @@ function EntryCard({
   canManage,
   entry,
   onLocalChange,
+  onDelete,
   onChanged,
   onUnauthorized,
 }: {
@@ -1091,6 +1157,7 @@ function EntryCard({
   canManage: boolean;
   entry: Entry;
   onLocalChange?: (partial: Partial<Entry>) => void;
+  onDelete?: () => void;
   onChanged: () => void;
   onUnauthorized: () => void;
 }) {
@@ -1160,6 +1227,27 @@ function EntryCard({
         return;
       }
       onLocalChange?.({ locked, updatedAt: new Date().toISOString() });
+    } catch {
+      setError("网络错误，请重试");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeSelf = async () => {
+    if (!window.confirm("确定删除这条封存？此操作不可撤销。")) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(
+        `/api/entries/${entry.id}?scope=${kind}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        setError(handleError(res));
+        return;
+      }
+      onDelete?.();
     } catch {
       setError("网络错误，请重试");
     } finally {
@@ -1257,6 +1345,14 @@ function EntryCard({
               >
                 {entry.locked ? "解锁" : "锁定"}
               </button>
+              <button
+                type="button"
+                onClick={() => void removeSelf()}
+                disabled={busy}
+                className={PILL_DANGER}
+              >
+                删除
+              </button>
             </>
           )
         )}
@@ -1269,9 +1365,11 @@ function EntryCard({
 
 function AdminLayer({
   unlocked,
+  barGeometry,
   onSessionRefresh,
 }: {
   unlocked: boolean;
+  barGeometry: BarGeometry;
   onSessionRefresh: () => Promise<void>;
 }) {
   const [password, setPassword] = useState("");
@@ -1336,12 +1434,14 @@ function AdminLayer({
     );
   }
 
-  return <AdminPanel onSessionRefresh={onSessionRefresh} />;
+  return <AdminPanel barGeometry={barGeometry} onSessionRefresh={onSessionRefresh} />;
 }
 
 function AdminPanel({
+  barGeometry,
   onSessionRefresh,
 }: {
+  barGeometry: BarGeometry;
   onSessionRefresh: () => Promise<void>;
 }) {
   const [messages, setMessages] = useState<AdminMessage[]>([]);
@@ -1658,44 +1758,51 @@ function AdminPanel({
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#ead8e5] bg-[#fff9fc]/80 p-3">
-            <span className="text-sm text-[#756a8a]">
-              已选 {picked.size} 条
-            </span>
-            <button
-              type="button"
-              disabled={busy || picked.size === 0}
-              onClick={() => {
-                void batchRun("M", tabMessages, "lock");
-                void batchRun("E", tabEntries, "lock");
+          {picked.size > 0 && (
+            <div
+              className="fixed z-40 flex flex-wrap items-center gap-2 rounded-2xl border border-[#ead8e5] bg-[#fff9fc]/95 px-4 py-2.5 shadow-lg shadow-[#d4b9c9]/25 backdrop-blur-sm"
+              style={{
+                top: barGeometry.top + barGeometry.h + 12,
+                left: barGeometry.left,
+                right: barGeometry.right,
               }}
-              className={PILL}
             >
-              批量锁定
-            </button>
-            <button
-              type="button"
-              disabled={busy || picked.size === 0}
-              onClick={() => {
-                void batchRun("M", tabMessages, "unlock");
-                void batchRun("E", tabEntries, "unlock");
-              }}
-              className={PILL}
-            >
-              批量解锁
-            </button>
-            <button
-              type="button"
-              disabled={busy || picked.size === 0}
-              onClick={() => {
-                void batchRun("M", tabMessages, "delete");
-                void batchRun("E", tabEntries, "delete");
-              }}
-              className={PILL_DANGER}
-            >
-              批量删除
-            </button>
-            {picked.size > 0 && (
+              <span className="text-sm text-[#756a8a]">
+                已选 {picked.size} 条
+              </span>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  void batchRun("M", tabMessages, "lock");
+                  void batchRun("E", tabEntries, "lock");
+                }}
+                className={PILL}
+              >
+                批量锁定
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  void batchRun("M", tabMessages, "unlock");
+                  void batchRun("E", tabEntries, "unlock");
+                }}
+                className={PILL}
+              >
+                批量解锁
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  void batchRun("M", tabMessages, "delete");
+                  void batchRun("E", tabEntries, "delete");
+                }}
+                className={PILL_DANGER}
+              >
+                批量删除
+              </button>
               <button
                 type="button"
                 disabled={busy}
@@ -1704,8 +1811,8 @@ function AdminPanel({
               >
                 清空选择
               </button>
-            )}
-          </div>
+            </div>
+          )}
           <section>
             <p className="mb-2 text-sm font-semibold text-[#756a8a]">
               留言（{tabMessages.length}）

@@ -4,7 +4,7 @@ import {
   updateEntry,
 } from "../../tree-hole-store";
 import {
-  authorizeAdminWithScope,
+  authorizeDelete,
   authorizeScopedMutation,
 } from "../../tree-hole-auth";
 
@@ -64,7 +64,7 @@ export async function DELETE(
 ) {
   try {
     const body = await request.json().catch(() => null) as { scope?: unknown };
-    const auth = await authorizeAdminWithScope(body);
+    const auth = await authorizeDelete(request, body);
     if (!auth.ok) {
       return Response.json({ error: auth.error }, { status: auth.status });
     }

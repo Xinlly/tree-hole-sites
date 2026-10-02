@@ -329,6 +329,53 @@ export async function authorizeLock(
   };
 }
 
+// DELETE 路由：管理员可删任意空间；非管理员成员仅可删自己的个人空间。
+// 成员路径带 ?scope；管理员兜底从 body.scope 取 id（可信方）。
+export async function authorizeDelete(
+  request: Request,
+  body: { scope?: unknown },
+): Promise<
+  | { ok: true; scope: Scope }
+  | { ok: false; status: 400 | 401 | 403; error: string }
+> {
+  const kindParam = new URL(request.url).searchParams.get("scope");
+  // 无 ?scope：仅管理员，scope 完整来自 body（可信方）
+  if (kindParam === null) {
+    if (!(await isAdminUnlocked())) {
+      return { ok: false, status: 401, error: "unauthorized" };
+    }
+    const scope = parseScope(body.scope);
+    if (!scope) {
+      return { ok: false, status: 400, error: "scope is required" };
+    }
+    return { ok: true, scope };
+  }
+  if (
+    kindParam !== "public" &&
+    kindParam !== "pass" &&
+    kindParam !== "user"
+  ) {
+    return { ok: false, status: 400, error: "scope is required" };
+  }
+
+  const member = await authorizeMember(request, true);
+  if (member.ok) {
+    if (!member.admin && member.scope.kind !== "user") {
+      return { ok: false, status: 403, error: "forbidden" };
+    }
+    return { ok: true, scope: member.scope };
+  }
+
+  if (await isAdminUnlocked()) {
+    const scope = parseScope(body.scope);
+    if (!scope || scope.kind !== kindParam) {
+      return { ok: false, status: 400, error: "scope is required" };
+    }
+    return { ok: true, scope };
+  }
+  return { ok: false, status: member.status, error: member.error };
+}
+
 // 管理员 :id 路由：仅管理员，body 必须带完整 scope
 export async function authorizeAdminWithScope(
   body: { scope?: unknown },

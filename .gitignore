@@ -24,6 +24,9 @@
 # sqlite database
 /data/
 
+# object store local data (runtime)
+/var/
+
 # misc
 .DS_Store
 *.pem
