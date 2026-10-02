@@ -314,7 +314,7 @@ function MemberSpace({
           key={`e-${entrySeq}`}
           fetchUrl={`/api/entries?scope=${kind}`}
           emptyText={
-            kind === "pass" ? "该空间还没有内容" : "还没有服务器封存。"
+            kind === "pass" ? "该空间还没有内容" : "还没有封存的心事。"
           }
           onUnauthorized={() => setAuth("out")}
           renderItem={(item) => (
@@ -396,7 +396,7 @@ function Gate({
         </h2>
         <p className="mt-3 leading-7 text-[#7b7481]">
           {kind === "public"
-            ? "输入密码后进入。封存和留言会被安全地保存到服务器，管理员可查看整理。"
+            ? "输入密码后进入。你的封存和留言会被好好收着，管理员可以查看整理。"
             : kind === "pass"
               ? "输入口令进入一间属于这串口令的房间。任意口令都可以进入；若这串口令从无人使用，会看到一间空房间。"
               : "用账号和密码登录你的个人空间。"}
@@ -500,7 +500,7 @@ function WriteMessage({
       }
       setNickname("");
       setContent("");
-      setStatus("已保存到服务器。");
+      setStatus("已好好收下啦。");
       onPosted();
     } catch {
       setError("网络错误，请重试");
@@ -513,7 +513,7 @@ function WriteMessage({
     <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/88 p-5 shadow-xl shadow-[#d4b9c9]/12 sm:p-6">
       <h2 className="text-xl font-semibold text-[#756a8a]">想对我说什么</h2>
       <p className="mt-1 text-sm text-[#7b7481]">
-        留下匿名昵称和想说的话，服务器会自动保存写入日期。
+        留下匿名昵称和想说的话，写入的日子会一并记着。
       </p>
 
       <label className="mt-4 block text-sm font-medium text-[#70697a]">
@@ -592,7 +592,7 @@ function WriteEntry({
         return;
       }
       setContent("");
-      setStatus("已封存到服务器。");
+      setStatus("好好收进口袋啦。");
       onPosted();
     } catch {
       setError("网络错误，请重试");
@@ -603,7 +603,7 @@ function WriteEntry({
 
   return (
     <div className="rounded-lg border border-[#ead8e5] bg-[#fff9fc]/88 p-5 shadow-xl shadow-[#d4b9c9]/12 sm:p-6">
-      <p className="text-sm text-[#a986a3]">服务器封存</p>
+      <p className="text-sm text-[#a986a3]">只属于你的封存</p>
       <h2 className="mt-1 text-2xl font-semibold text-[#756a8a]">
         把今天放进树洞
       </h2>
