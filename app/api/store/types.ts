@@ -44,6 +44,8 @@ export type StoredAccount = {
 export type PassSpaceInfo = {
   id: string;
   createdAt: string;
+  // 人可识别的口令明文标签（建索引时从当次会话落库）；历史数据可能为空
+  label?: string;
 };
 
 export type ListOptions = {
@@ -147,5 +149,5 @@ export interface Store {
 
   // §4.5 口令空间
   listPassSpaces(): Promise<PassSpaceInfo[]>;
-  ensurePassSpace(id: string): Promise<PassSpaceInfo>;
+  ensurePassSpace(id: string, label?: string): Promise<PassSpaceInfo>;
 }

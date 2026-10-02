@@ -8,6 +8,7 @@ import {
 } from "../tree-hole-store";
 import {
   authorizeMember,
+  getPassLabel,
 } from "../tree-hole-auth";
 import { getStore } from "../store/index";
 
@@ -53,7 +54,7 @@ export async function POST(request: Request) {
     );
     // §4.3：口令空间第一条内容写入时建立索引（幂等）
     if (auth.scope.kind === "pass") {
-      await getStore().ensurePassSpace(auth.scope.id);
+      await getStore().ensurePassSpace(auth.scope.id, (await getPassLabel()) ?? undefined);
     }
     return Response.json({ ok: true }, { status: 201 });
   } catch (error) {

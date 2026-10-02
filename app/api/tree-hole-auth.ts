@@ -92,6 +92,12 @@ export async function clearPassCookie() {
   cookieStore.set(PASS_LABEL_COOKIE, "", cookieClearOptions());
 }
 
+// 读取当前口令空间的明文标签（建索引时落库用）；无则 null（历史会话）
+export async function getPassLabel(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get(PASS_LABEL_COOKIE)?.value ?? null;
+}
+
 // —— 个人账号：HMAC 签名令牌（§3.4）——
 
 export async function hashUserPassword(password: string) {

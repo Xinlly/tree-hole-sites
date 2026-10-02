@@ -50,7 +50,7 @@ type Account = {
   createdAt: string;
 };
 
-type PassSpace = { id: string; createdAt: string };
+type PassSpace = { id: string; createdAt: string; label?: string };
 
 type SessionInfo = {
   public: boolean;
@@ -1510,7 +1510,7 @@ function AdminPanel({
             <option value="">全部（{passSpaces.length}）</option>
             {passSpaces.map((space) => (
               <option key={space.id} value={space.id}>
-                {space.id.slice(0, 8)}…（{formatTime(space.createdAt)}）
+                {space.label || `${space.id.slice(0, 8)}…`}（{formatTime(space.createdAt)}）
               </option>
             ))}
           </select>

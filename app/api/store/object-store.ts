@@ -237,14 +237,23 @@ export class ObjectStore implements Store {
     return this.enqueue(PASS_INDEX_QUEUE, () => this.readPassIndex());
   }
 
-  async ensurePassSpace(id: string) {
+  async ensurePassSpace(id: string, label?: string) {
     return this.enqueue(PASS_INDEX_QUEUE, async () => {
       const index = await this.readPassIndex();
       const existing = index.find((info) => info.id === id);
       if (existing) {
+        // 标签只在缺失时补写，不覆盖已有标签
+        if (!existing.label && label) {
+          existing.label = label;
+          await this.putObject(
+            PASS_INDEX_KEY,
+            gzipSync(Buffer.from(JSON.stringify(index), "utf8")),
+          );
+        }
         return existing;
       }
       const info: PassSpaceInfo = { id, createdAt: currentTimestamp() };
+      if (label) info.label = label;
       index.push(info);
       await this.putObject(
         PASS_INDEX_KEY,
@@ -708,7 +717,8 @@ export class ObjectStore implements Store {
         value.some(
           (item) =>
             typeof item?.id !== "string" ||
-            typeof item.createdAt !== "string",
+            typeof item.createdAt !== "string" ||
+            (item.label !== undefined && typeof item.label !== "string"),
         )
       ) {
         throw new Error(`Invalid pass-space index in ${PASS_INDEX_KEY}`);

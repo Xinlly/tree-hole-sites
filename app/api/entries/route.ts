@@ -7,6 +7,7 @@ import {
 } from "../tree-hole-store";
 import {
   authorizeMember,
+  getPassLabel,
 } from "../tree-hole-auth";
 import { getStore } from "../store/index";
 
@@ -54,7 +55,7 @@ export async function POST(request: Request) {
     // 任何创建都写 reply=""；回复一律走 /api/entries/:id/reply
     await createEntry(auth.scope, mood.slice(0, 24), content.slice(0, 1500));
     if (auth.scope.kind === "pass") {
-      await getStore().ensurePassSpace(auth.scope.id);
+      await getStore().ensurePassSpace(auth.scope.id, (await getPassLabel()) ?? undefined);
     }
     return Response.json({ ok: true }, { status: 201 });
   } catch (error) {

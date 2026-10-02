@@ -96,9 +96,15 @@ export class SqlStore implements Store {
       );
      CREATE TABLE IF NOT EXISTS pass_space_index (
         id TEXT PRIMARY KEY,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT ''
       );`,
     );
+    // 兼容已有库：列不存在则补（建表 IF NOT EXISTS 不会给旧表加列）
+    const cols = this.getDb().prepare("PRAGMA table_info(pass_space_index)").all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "label")) {
+      this.getDb().exec("ALTER TABLE pass_space_index ADD COLUMN label TEXT NOT NULL DEFAULT ''");
+    }
   }
 
   // —— 留言 ——
@@ -344,22 +350,22 @@ export class SqlStore implements Store {
   async listPassSpaces(): Promise<PassSpaceInfo[]> {
     await this.ensureInitialized();
     const rows = this.getDb()
-      .prepare("SELECT id, created_at FROM pass_space_index ORDER BY created_at DESC")
-      .all() as Array<{ id: string; created_at: string }>;
-    return rows.map((row) => ({ id: row.id, createdAt: row.created_at }));
+      .prepare("SELECT id, created_at, label FROM pass_space_index ORDER BY created_at DESC")
+      .all() as Array<{ id: string; created_at: string; label: string }>;
+    return rows.map((row) => ({ id: row.id, createdAt: row.created_at, label: row.label || undefined }));
   }
 
-  async ensurePassSpace(id: string): Promise<PassSpaceInfo> {
+  async ensurePassSpace(id: string, label?: string): Promise<PassSpaceInfo> {
     await this.ensureInitialized();
     this.getDb()
       .prepare(
-        "INSERT OR IGNORE INTO pass_space_index (id, created_at) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO pass_space_index (id, created_at, label) VALUES (?, ?, ?)",
       )
-      .run(id, currentTimestamp());
+      .run(id, currentTimestamp(), label ?? "");
     const row = this.getDb()
-      .prepare("SELECT id, created_at FROM pass_space_index WHERE id = ?")
-      .get(id) as { id: string; created_at: string };
-    return { id: row.id, createdAt: row.created_at };
+      .prepare("SELECT id, created_at, label FROM pass_space_index WHERE id = ?")
+      .get(id) as { id: string; created_at: string; label: string };
+    return { id: row.id, createdAt: row.created_at, label: row.label || undefined };
   }
 
   // —— 内部 ——
