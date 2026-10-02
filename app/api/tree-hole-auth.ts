@@ -7,6 +7,7 @@ import type { Scope, StoredAccount } from "./store/types.ts";
 // §3.2 四类 Cookie
 const PUBLIC_COOKIE = "tree_hole_session";
 const PASS_COOKIE = "tree_hole_pass_session";
+const PASS_LABEL_COOKIE = "tree_hole_pass_label";
 const USER_COOKIE = "tree_hole_user_session";
 const ADMIN_COOKIE = "tree_hole_admin_session";
 
@@ -17,7 +18,7 @@ const USER_PASSWORD_PREFIX = "tree-hole-user:v1:";
 
 const PUBLIC_SCOPE: Scope = { kind: "public", id: "" };
 
-export { PUBLIC_COOKIE, PASS_COOKIE, USER_COOKIE, ADMIN_COOKIE };
+export { PUBLIC_COOKIE, PASS_COOKIE, PASS_LABEL_COOKIE, USER_COOKIE, ADMIN_COOKIE };
 
 // —— 口令配置 ——
 
@@ -72,9 +73,12 @@ export async function passSpaceId(passphrase: string) {
   return sha256Hex(passphrase);
 }
 
+// 口令会话 cookie 存 SHA-256 派生 scopeId；另存一个同生命周期的明文标签 cookie，
+// 仅用于在顶部空间栏回显“用户认得的那个口令”，退出/切换时一并清除。
 export async function setPassSessionCookie(passphrase: string) {
   const cookieStore = await cookies();
   cookieStore.set(PASS_COOKIE, await passSpaceId(passphrase), cookieOptions());
+  cookieStore.set(PASS_LABEL_COOKIE, passphrase, cookieOptions());
 }
 
 export async function clearPublicCookie() {
@@ -85,6 +89,7 @@ export async function clearPublicCookie() {
 export async function clearPassCookie() {
   const cookieStore = await cookies();
   cookieStore.set(PASS_COOKIE, "", cookieClearOptions());
+  cookieStore.set(PASS_LABEL_COOKIE, "", cookieClearOptions());
 }
 
 // —— 个人账号：HMAC 签名令牌（§3.4）——
@@ -145,20 +150,22 @@ export async function clearAdminCookie() {
   cookieStore.set(ADMIN_COOKIE, "", cookieClearOptions());
 }
 
-// 顶部空间栏身份摘要：口令只存哈希无法还原明文（给短 id），个人给真实用户名。
+// 顶部空间栏身份摘要：口令回显明文标签（用户认得的那个口令），个人给真实用户名。
 export async function getSessionIdentity(): Promise<{
   passId: string | null;
+  passLabel: string | null;
   username: string | null;
 }> {
   const cookieStore = await cookies();
   const passId = cookieStore.get(PASS_COOKIE)?.value ?? null;
+  const passLabel = cookieStore.get(PASS_LABEL_COOKIE)?.value ?? null;
   let username: string | null = null;
   const userToken = cookieStore.get(USER_COOKIE)?.value;
   if (userToken) {
     const account = await verifyUserToken(userToken);
     if (account) username = account.username;
   }
-  return { passId, username };
+  return { passId, passLabel, username };
 }
 
 // §3.4：SIGN_SECRET 缺则用管理员口令 SHA-256 派生

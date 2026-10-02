@@ -56,6 +56,7 @@ type SessionInfo = {
   public: boolean;
   admin: boolean;
   passId: string | null;
+  passLabel: string | null;
   username: string | null;
 };
 
@@ -109,12 +110,14 @@ export default function Home() {
       unlocked: boolean;
       admin: boolean;
       passId: string | null;
+      passLabel: string | null;
       username: string | null;
     };
     setSession({
       public: data.unlocked,
       admin: data.admin,
       passId: data.passId,
+      passLabel: data.passLabel,
       username: data.username,
     });
   }, []);
@@ -127,12 +130,14 @@ export default function Home() {
           unlocked: boolean;
           admin: boolean;
           passId: string | null;
+          passLabel: string | null;
           username: string | null;
         }) =>
           setSession({
             public: data.unlocked,
             admin: data.admin,
             passId: data.passId,
+            passLabel: data.passLabel,
             username: data.username,
           }),
       )
@@ -246,6 +251,7 @@ export default function Home() {
             <MemberSpace
               key={`${view}-${exitSeq}`}
               kind={view}
+              onEntered={refreshSession}
             />
           )}
         </div>
@@ -269,20 +275,22 @@ export default function Home() {
 // —— 统一顶部空间栏：当前层 + 身份 + 退出 + 切换菜单 ——
 // “嘟”在时与其同线靠右（小胶囊）；“嘟”滑出后同一胶囊转顶部长条椭圆悬浮，连贯过渡。
 
-// 大圆点（与 cef5ede 同一实心紫圆），用在 空间·身份 以及 嘟·空间 之间
+// 大圆点（与 cef5ede 同一实心紫圆）；间距统一由父级控制为 8px
 function SpaceDot() {
   return (
-    <span className="mx-2 inline-block h-2 w-2 shrink-0 rounded-full bg-[#b9addd]" />
+    <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-[#b9addd]" />
   );
 }
 
-// 收起/展开两态共用：口令给短标、个人给用户名，其余无身份
+// 收起/展开两态共用：口令优先回显用户认得的明文口令，缺失再回退哈希短标；个人给用户名
 function barIdentity(view: Layer, session: SessionInfo | null) {
-  return view === "pass" && session?.passId
-    ? session.passId.slice(0, 8)
-    : view === "user" && session?.username
-      ? session.username
-      : "";
+  if (view === "pass") {
+    if (session?.passLabel) return session.passLabel;
+    return session?.passId ? session.passId.slice(0, 8) : "";
+  }
+  return view === "user" && session?.username
+    ? session.username
+    : "";
 }
 
 // 量收起态胶囊宽度：与 q=0 胶囊同一盒模型与内容（不含“嘟”前缀），仅用于测量
@@ -296,10 +304,10 @@ function BarSizerContent({
   const identity = barIdentity(view, session);
   return (
     <div
-      className="flex items-center justify-between rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95"
+      className="flex items-center justify-between gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95"
       style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 12, paddingRight: 12 }}
     >
-      <span className="flex min-w-0 items-center whitespace-nowrap text-sm font-medium text-[#756a8a]">
+      <span className="flex min-w-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-[#756a8a]">
         <span>{SPACE_NAME[view]}</span>
         {identity && (
           <>
@@ -389,10 +397,9 @@ function SpaceBar({
     </>
   );
 
-  // 连续随滚动插值：内边距左右对称并一起从 12→16；嘟前缀宽度/透明度跟手
+  // 连续随滚动插值：内边距左右对称并一起从 12→16
   const padY = 6 + 2 * q;
   const padX = 12 + 4 * q;
-  const prefixW = 48 * q;
 
   return (
     <div
@@ -404,7 +411,7 @@ function SpaceBar({
       }}
     >
       <div
-        className="flex items-center justify-between rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
+        className="flex items-center justify-between gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
         style={{
           paddingTop: padY,
           paddingBottom: padY,
@@ -412,21 +419,21 @@ function SpaceBar({
           paddingRight: padX,
         }}
       >
-        <span className="flex min-w-0 items-center text-sm font-medium text-[#756a8a]">
-          {/* “嘟·”前缀：宽度与透明度随 q 连续出现 */}
+        <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
+          {/* “嘟·”前缀：maxWidth 与透明度随 q 连续出现；q=0 宽度 0、不占间距 */}
           <span
-            className="flex items-center overflow-hidden"
-            style={{ width: prefixW, opacity: q }}
+            className="flex items-center gap-2 overflow-hidden"
+            style={{ maxWidth: 40 * q, opacity: q, display: q > 0 ? "flex" : "none" }}
           >
             嘟
             <SpaceDot />
           </span>
 
-          <span className="truncate">{spaceLabel}</span>
+          <span className="whitespace-nowrap">{spaceLabel}</span>
           {identity && (
             <>
               <SpaceDot />
-              <span className="truncate text-[#a986a3]">{identity}</span>
+              <span className="whitespace-nowrap text-[#a986a3]">{identity}</span>
             </>
           )}
         </span>
@@ -441,8 +448,10 @@ function SpaceBar({
 
 function MemberSpace({
   kind,
+  onEntered,
 }: {
   kind: ScopeKind;
+  onEntered?: () => Promise<void> | void;
 }) {
   // checking=探针判定会话；in=已进入；out=展示对应入口
   const [auth, setAuth] = useState<"checking" | "in" | "out">("checking");
@@ -484,6 +493,8 @@ function MemberSpace({
           setMessageSeq((n) => n + 1);
           setEntrySeq((n) => n + 1);
           setAuth("in");
+          // 通知 Home 刷新会话（口令进入后顶部空间栏据此显示当前口令）
+          void onEntered?.();
         }}
       />
     );

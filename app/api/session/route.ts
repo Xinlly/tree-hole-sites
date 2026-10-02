@@ -15,6 +15,7 @@ export async function GET() {
     unlocked: publicUnlocked,
     admin: adminUnlocked,
     passId: identity.passId,
+    passLabel: identity.passLabel,
     username: identity.username,
   });
 }
