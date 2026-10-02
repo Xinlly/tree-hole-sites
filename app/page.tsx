@@ -143,10 +143,10 @@ export default function Home() {
   useEffect(() => {
     let raf = 0;
     const PIN_TOP = 16;
+    const anchor = anchorRef.current;
+    const content = contentRef.current;
     const update = () => {
       raf = 0;
-      const anchor = anchorRef.current;
-      const content = contentRef.current;
       if (!anchor || !content) return;
       const a = anchor.getBoundingClientRect();
       const c = content.getBoundingClientRect();
@@ -157,7 +157,9 @@ export default function Home() {
       const q = Math.min(1, Math.max(0, (window.scrollY - duTop) / Math.max(1, duBottom - duTop)));
       const top = Math.max(PIN_TOP, a.top); // 纵向未到阈值跟随锚点，到后锁定 16px
       const left = a.left + (c.left - a.left) * q;
-      const right = window.innerWidth - a.right + (c.right - a.right) * q;
+      // 视口宽度不含滚动条：fixed 包含块宽度=clientWidth，否则会把 15px 滚动条算入、挤掉文字
+      const viewportW = document.documentElement.clientWidth;
+      const right = viewportW - a.right + (c.right - a.right) * q;
       setBar((prev) =>
         Math.abs(prev.q - q) > 0.001 ||
         Math.abs(prev.top - top) > 0.5 ||
@@ -173,9 +175,16 @@ export default function Home() {
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll);
+    // 量尺/容器尺寸变化（会话加载完成、切换层致身份增减）也重算
+    const ro = new ResizeObserver(onScroll);
+    if (anchor && content) {
+      ro.observe(anchor);
+      ro.observe(content);
+    }
     return () => {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
+      ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
   }, []);
@@ -216,8 +225,14 @@ export default function Home() {
             >
               嘟
             </h1>
-            {/* 等高占位：量取小胶囊自然位置/高度，真正的胶囊 fixed 渲染并随滚动连续插值 */}
-            <div ref={anchorRef} aria-hidden className="h-[34px] w-[150px]" />
+            {/* 量尺：不可见(visibility:hidden)但仍占自然尺寸，量出收起态胶囊的真实宽度与顶位 */}
+            <div
+              ref={anchorRef}
+              aria-hidden
+              className="invisible"
+            >
+              <BarSizerContent view={view} session={session} />
+            </div>
           </header>
 
           {session === null ? (
@@ -261,6 +276,51 @@ function SpaceDot() {
   );
 }
 
+// 收起/展开两态共用：口令给短标、个人给用户名，其余无身份
+function barIdentity(view: Layer, session: SessionInfo | null) {
+  return view === "pass" && session?.passId
+    ? session.passId.slice(0, 8)
+    : view === "user" && session?.username
+      ? session.username
+      : "";
+}
+
+// 量收起态胶囊宽度：与 q=0 胶囊同一盒模型与内容（不含“嘟”前缀），仅用于测量
+function BarSizerContent({
+  view,
+  session,
+}: {
+  view: Layer;
+  session: SessionInfo | null;
+}) {
+  const identity = barIdentity(view, session);
+  return (
+    <div
+      className="flex items-center justify-between rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95"
+      style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 12, paddingRight: 12 }}
+    >
+      <span className="flex min-w-0 items-center whitespace-nowrap text-sm font-medium text-[#756a8a]">
+        <span>{SPACE_NAME[view]}</span>
+        {identity && (
+          <>
+            <SpaceDot />
+            <span className="text-[#a986a3]">{identity}</span>
+          </>
+        )}
+      </span>
+      <div className="flex shrink-0 items-center gap-2">
+        <button type="button" className={PILL}>退出</button>
+        <button
+          type="button"
+          className="flex items-center gap-1 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a]"
+        >
+          切换<span>▾</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 type BarGeometry = { q: number; top: number; left: number; right: number };
 
 function SpaceBar({
@@ -283,12 +343,7 @@ function SpaceBar({
   onExit: () => void;
 }) {
   // 口令只存哈希给短标，个人给用户名
-  const identity =
-    view === "pass" && session?.passId
-      ? session.passId.slice(0, 8)
-      : view === "user" && session?.username
-        ? session.username
-        : "";
+  const identity = barIdentity(view, session);
   const spaceLabel = SPACE_NAME[view];
   const q = geometry.q;
 
@@ -334,9 +389,9 @@ function SpaceBar({
     </>
   );
 
-  // 连续随滚动插值：内边距/嘟前缀宽度与透明度全部跟手，无跳变
+  // 连续随滚动插值：内边距左右对称并一起从 12→16；嘟前缀宽度/透明度跟手
   const padY = 6 + 2 * q;
-  const padR = 6 + 10 * q;
+  const padX = 12 + 4 * q;
   const prefixW = 48 * q;
 
   return (
@@ -353,8 +408,8 @@ function SpaceBar({
         style={{
           paddingTop: padY,
           paddingBottom: padY,
-          paddingLeft: 16,
-          paddingRight: padR,
+          paddingLeft: padX,
+          paddingRight: padX,
         }}
       >
         <span className="flex min-w-0 items-center text-sm font-medium text-[#756a8a]">
