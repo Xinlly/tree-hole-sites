@@ -91,6 +91,8 @@ export default function Home() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [exitSeq, setExitSeq] = useState(0);
+  const [pinned, setPinned] = useState(false);
+  const titleRef = useRef<HTMLHeadingElement>(null);
 
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/session", { cache: "no-store" });
@@ -128,6 +130,18 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
+  // “嘟”滑出视口后 → 顶部悬浮空间栏；滑回 → 恢复同行靠右
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => setPinned(!entry.isIntersecting),
+      { threshold: 0 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const go = (layer: Layer) => {
     setView(layer);
     setMenuOpen(false);
@@ -157,15 +171,19 @@ export default function Home() {
               <p className="text-sm text-[#a986a3]">
                 浅粉 · 浅紫 · 浅蓝的明媚树洞
               </p>
-              <h1 className="mt-2 text-4xl font-semibold tracking-normal text-[#756a8a] sm:text-6xl">
+              <h1
+                ref={titleRef}
+                className="mt-2 text-4xl font-semibold tracking-normal text-[#756a8a] sm:text-6xl"
+              >
                 嘟
               </h1>
             </div>
 
-            {/* 统一空间栏：当前位置 + 身份 + 退出 + 切换，一个元素回答“我在哪/怎么切” */}
+            {/* 统一空间栏：当前位置 + 身份 + 退出 + 切换；“嘟”滑出后转为顶部悬浮 */}
             <SpaceBar
               view={view}
               session={session}
+              pinned={pinned}
               menuOpen={menuOpen}
               onToggleMenu={() => setMenuOpen((open) => !open)}
               onCloseMenu={() => setMenuOpen(false)}
@@ -193,11 +211,13 @@ export default function Home() {
   );
 }
 
-// —— 统一顶部空间栏：当前层 + 身份短标 + 退出 + 切换菜单 ——
+// —— 统一顶部空间栏：当前层 + 身份 + 退出 + 切换菜单 ——
+// “嘟”在时与其同行靠右；“嘟”滑出后转顶部悬浮条，左侧并入“嘟·空间·身份”，操作仍靠右。
 
 function SpaceBar({
   view,
   session,
+  pinned,
   menuOpen,
   onToggleMenu,
   onCloseMenu,
@@ -206,6 +226,7 @@ function SpaceBar({
 }: {
   view: Layer;
   session: SessionInfo | null;
+  pinned: boolean;
   menuOpen: boolean;
   onToggleMenu: () => void;
   onCloseMenu: () => void;
@@ -213,28 +234,25 @@ function SpaceBar({
   onExit: () => void;
 }) {
   const isMember = view !== "admin";
+  // 分隔符与页面现有大圆点一致；口令只存哈希给短标，个人给用户名
   const identity =
     view === "pass" && session?.passId
-      ? ` #${session.passId.slice(0, 8)}`
+      ? session.passId.slice(0, 8)
       : view === "user" && session?.username
-        ? ` · ${session.username}`
+        ? session.username
         : "";
-  const currentLabel = isMember
-    ? `${SPACE_NAME[view]}${identity}`
-    : "管理者查看";
+  const spaceLabel = isMember ? SPACE_NAME[view] : "管理者查看";
+  const currentLabel = identity ? `${spaceLabel}·${identity}` : spaceLabel;
+  const pinnedLabel = `嘟·${currentLabel}`;
 
-  return (
-    <div className="relative z-20 self-start">
-      <div className="flex items-center gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/86 py-1.5 pl-4 pr-1.5 shadow-sm">
-        <span className="h-2 w-2 rounded-full bg-[#b9addd]" />
-        <span className="text-sm font-medium text-[#756a8a]">
-          {currentLabel}
-        </span>
-        {isMember && (
-          <button type="button" onClick={onExit} className={PILL}>
-            退出
-          </button>
-        )}
+  const buttons = (
+    <>
+      {isMember && (
+        <button type="button" onClick={onExit} className={PILL}>
+          退出
+        </button>
+      )}
+      <div className="relative">
         <button
           type="button"
           onClick={onToggleMenu}
@@ -247,26 +265,51 @@ function SpaceBar({
             ▾
           </span>
         </button>
+        {menuOpen && (
+          <>
+            <div className="fixed inset-0 z-10" onClick={onCloseMenu} />
+            <div className="absolute right-0 z-50 mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
+              {(["public", "pass", "user", "admin"] as Layer[]).map((layer) => (
+                <button
+                  key={layer}
+                  type="button"
+                  onClick={() => onGo(layer)}
+                  className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
+                >
+                  {layer === "admin" ? "管理者查看" : SPACE_NAME[layer]}
+                  {view === layer && (
+                    <span className="text-[#b9addd]">✓</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
+    </>
+  );
 
-      {menuOpen && (
-        <>
-          <div className="fixed inset-0 z-10" onClick={onCloseMenu} />
-          <div className="absolute right-0 z-20 mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
-            {(["public", "pass", "user", "admin"] as Layer[]).map((layer) => (
-              <button
-                key={layer}
-                type="button"
-                onClick={() => onGo(layer)}
-                className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
-              >
-                {layer === "admin" ? "管理者查看" : SPACE_NAME[layer]}
-                {view === layer && <span className="text-[#b9addd]">✓</span>}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+  if (pinned) {
+    return (
+      <div className="fixed inset-x-0 top-0 z-40 border-b border-[#ead8e5] bg-[#fff9fc]/90 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-5 py-2.5 sm:px-8 lg:px-12">
+          <span className="truncate text-sm font-medium text-[#756a8a]">
+            {pinnedLabel}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">{buttons}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative z-20 self-start">
+      <div className="flex items-center gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/86 py-1.5 pl-4 pr-1.5 shadow-sm">
+        <span className="text-sm font-medium text-[#756a8a]">
+          {currentLabel}
+        </span>
+        {buttons}
+      </div>
     </div>
   );
 }
