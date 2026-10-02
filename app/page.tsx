@@ -608,7 +608,7 @@ function WriteEntry({
         把今天放进树洞
       </h2>
       <p className="mt-1 text-sm text-[#7b7481]">
-        写完后封存，管理员可以在管理者查看模式里整理和删除。
+        写完后轻轻封存，管理员会帮忙照看和整理。
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">
