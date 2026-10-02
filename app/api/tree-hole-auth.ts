@@ -333,8 +333,28 @@ export function assertSameOrigin(request: Request): boolean {
     return false;
   }
   const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) {
-    return false;
+  if (origin) {
+    // 反代后 request.url 可能是内部监听地址（如 http://0.0.0.0:3000），
+    // 不能直接拿它比浏览器 Origin；优先用对外可见的 Host/X-Forwarded-* 推导期望源，
+    // 都缺失时（如单测/简单直连）才回退到 request.url。
+    const proto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
+    const host = request.headers.get("x-forwarded-host")?.split(",")[0].trim()
+      ?? request.headers.get("host");
+    let expectedOrigin;
+    try {
+      expectedOrigin = host
+        ? new URL(`${proto ?? "http"}://${host}`).origin
+        : new URL(request.url).origin;
+    } catch {
+      return false;
+    }
+    let actualOrigin;
+    try {
+      actualOrigin = new URL(origin).origin;
+    } catch {
+      return false;
+    }
+    if (actualOrigin !== expectedOrigin) return false;
   }
   return true;
 }
