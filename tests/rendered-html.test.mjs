@@ -33,7 +33,7 @@ test("page includes positive moods first, bright Morandi copy, companion art, an
   assert.ok(page.indexOf("愉悦") < page.indexOf("低落"));
   assert.ok(page.indexOf("幸福") < page.indexOf("低落"));
   assert.match(page, /想对我说什么/);
-  assert.match(page, /管理者查看/);
+  assert.match(page, /管理员空间/);
   assert.match(page, /morandi-companions\.png/);
   assert.match(page, /浅粉/);
   assert.match(page, /浅紫/);

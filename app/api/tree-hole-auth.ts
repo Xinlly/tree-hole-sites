@@ -140,6 +140,11 @@ export async function clearUserCookie() {
   cookieStore.set(USER_COOKIE, "", cookieClearOptions());
 }
 
+export async function clearAdminCookie() {
+  const cookieStore = await cookies();
+  cookieStore.set(ADMIN_COOKIE, "", cookieClearOptions());
+}
+
 // 顶部空间栏身份摘要：口令只存哈希无法还原明文（给短 id），个人给真实用户名。
 export async function getSessionIdentity(): Promise<{
   passId: string | null;

@@ -59,10 +59,11 @@ type SessionInfo = {
   username: string | null;
 };
 
-const SPACE_NAME: Record<ScopeKind, string> = {
+const SPACE_NAME: Record<Layer, string> = {
   public: "公共空间",
   pass: "口令空间",
   user: "个人空间",
+  admin: "管理员空间",
 };
 
 // mood 固定且正向在前（愉悦、幸福排在低落之前）
@@ -85,14 +86,22 @@ const PILL =
   "rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50";
 const PILL_PRIMARY =
   "rounded-full bg-[#b9addd] px-3 py-1 text-xs text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:opacity-50";
+// 柔和危险色（删除用）：淡粉底+粉褐字，仍是 Morandi 调
+const PILL_DANGER =
+  "rounded-full border border-[#eccfd8] bg-[#fdf2f5] px-3 py-1 text-xs text-[#a36978] transition hover:border-[#dfb4c1] hover:bg-white disabled:cursor-not-allowed disabled:opacity-50";
 
 export default function Home() {
   const [view, setView] = useState<Layer>("public");
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [exitSeq, setExitSeq] = useState(0);
-  const [pinned, setPinned] = useState(false);
+  // 胶囊几何：q=卷出比例，top/left/right 为 fixed 定位的连续插值结果
+  const [bar, setBar] = useState<{ q: number; top: number; left: number; right: number }>(
+    { q: 0, top: 0, left: 0, right: 0 },
+  );
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/session", { cache: "no-store" });
@@ -130,16 +139,45 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  // “嘟”滑出视口后 → 顶部悬浮空间栏；滑回 → 恢复同行靠右
+  // “嘟”卷出过程的连续进度 q；胶囊 fixed 几何由锚点(小胶囊自然位)向内容容器边缘插值
   useEffect(() => {
-    const el = titleRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => setPinned(!entry.isIntersecting),
-      { threshold: 0 },
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
+    let raf = 0;
+    const PIN_TOP = 16;
+    const update = () => {
+      raf = 0;
+      const anchor = anchorRef.current;
+      const content = contentRef.current;
+      if (!anchor || !content) return;
+      const a = anchor.getBoundingClientRect();
+      const c = content.getBoundingClientRect();
+      const du = titleRef.current?.getBoundingClientRect();
+      // q 绑定“嘟”字本身的卷出过程：嘟顶碰视口顶→嘟底离开，0..1 连续交接
+      const duTop = (du ? du.top : a.top) + window.scrollY;
+      const duBottom = (du ? du.bottom : a.bottom) + window.scrollY;
+      const q = Math.min(1, Math.max(0, (window.scrollY - duTop) / Math.max(1, duBottom - duTop)));
+      const top = Math.max(PIN_TOP, a.top); // 纵向未到阈值跟随锚点，到后锁定 16px
+      const left = a.left + (c.left - a.left) * q;
+      const right = window.innerWidth - a.right + (c.right - a.right) * q;
+      setBar((prev) =>
+        Math.abs(prev.q - q) > 0.001 ||
+        Math.abs(prev.top - top) > 0.5 ||
+        Math.abs(prev.left - left) > 0.5 ||
+        Math.abs(prev.right - right) > 0.5
+          ? { q, top, left, right }
+          : prev,
+      );
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, []);
 
   const go = (layer: Layer) => {
@@ -154,7 +192,9 @@ export default function Home() {
         ? "/api/logout"
         : view === "pass"
           ? "/api/pass/exit"
-          : "/api/account/logout";
+          : view === "user"
+            ? "/api/account/logout"
+            : "/api/admin/exit";
     await fetch(endpoint, { method: "POST" });
     await refreshSession();
     setExitSeq((n) => n + 1);
@@ -165,7 +205,7 @@ export default function Home() {
       <section className="relative min-h-screen overflow-hidden px-5 py-6 sm:px-8 lg:px-12">
         <div className={`absolute inset-0 ${MORANDI_GRADIENT}`} />
 
-        <div className="relative mx-auto flex max-w-7xl flex-col gap-6">
+        <div ref={contentRef} className="relative mx-auto flex max-w-7xl flex-col gap-6">
           <p className="text-sm text-[#a986a3]">
             浅粉 · 浅紫 · 浅蓝的明媚树洞
           </p>
@@ -176,18 +216,8 @@ export default function Home() {
             >
               嘟
             </h1>
-
-            {/* 统一空间栏：与“嘟”同线靠右；“嘟”滑出后转为顶部悬浮（同一胶囊、连贯过渡） */}
-            <SpaceBar
-              view={view}
-              session={session}
-              pinned={pinned}
-              menuOpen={menuOpen}
-              onToggleMenu={() => setMenuOpen((open) => !open)}
-              onCloseMenu={() => setMenuOpen(false)}
-              onGo={go}
-              onExit={() => void exitCurrent()}
-            />
+            {/* 等高占位：量取小胶囊自然位置/高度，真正的胶囊 fixed 渲染并随滚动连续插值 */}
+            <div ref={anchorRef} aria-hidden className="h-[34px] w-[150px]" />
           </header>
 
           {session === null ? (
@@ -205,6 +235,18 @@ export default function Home() {
           )}
         </div>
       </section>
+
+      {/* 真正的空间胶囊：fixed，几何随滚动逐帧连续插值 */}
+      <SpaceBar
+        view={view}
+        session={session}
+        geometry={bar}
+        menuOpen={menuOpen}
+        onToggleMenu={() => setMenuOpen((open) => !open)}
+        onCloseMenu={() => setMenuOpen(false)}
+        onGo={go}
+        onExit={() => void exitCurrent()}
+      />
     </main>
   );
 }
@@ -219,10 +261,12 @@ function SpaceDot() {
   );
 }
 
+type BarGeometry = { q: number; top: number; left: number; right: number };
+
 function SpaceBar({
   view,
   session,
-  pinned,
+  geometry,
   menuOpen,
   onToggleMenu,
   onCloseMenu,
@@ -231,14 +275,13 @@ function SpaceBar({
 }: {
   view: Layer;
   session: SessionInfo | null;
-  pinned: boolean;
+  geometry: BarGeometry;
   menuOpen: boolean;
   onToggleMenu: () => void;
   onCloseMenu: () => void;
   onGo: (layer: Layer) => void;
   onExit: () => void;
 }) {
-  const isMember = view !== "admin";
   // 口令只存哈希给短标，个人给用户名
   const identity =
     view === "pass" && session?.passId
@@ -246,15 +289,14 @@ function SpaceBar({
       : view === "user" && session?.username
         ? session.username
         : "";
-  const spaceLabel = isMember ? SPACE_NAME[view] : "管理者查看";
+  const spaceLabel = SPACE_NAME[view];
+  const q = geometry.q;
 
   const buttons = (
     <>
-      {isMember && (
-        <button type="button" onClick={onExit} className={PILL}>
-          退出
-        </button>
-      )}
+      <button type="button" onClick={onExit} className={PILL}>
+        退出
+      </button>
       <div className="relative">
         <button
           type="button"
@@ -270,8 +312,8 @@ function SpaceBar({
         </button>
         {menuOpen && (
           <>
-            <div className="fixed inset-0 z-10" onClick={onCloseMenu} />
-            <div className="absolute right-0 z-50 mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
+            <div className="fixed inset-0 z-[60]" onClick={onCloseMenu} />
+            <div className="absolute right-0 z-[70] mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
               {(["public", "pass", "user", "admin"] as Layer[]).map((layer) => (
                 <button
                   key={layer}
@@ -279,7 +321,7 @@ function SpaceBar({
                   onClick={() => onGo(layer)}
                   className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
                 >
-                  {layer === "admin" ? "管理者查看" : SPACE_NAME[layer]}
+                  {SPACE_NAME[layer]}
                   {view === layer && (
                     <span className="text-[#b9addd]">✓</span>
                   )}
@@ -292,44 +334,49 @@ function SpaceBar({
     </>
   );
 
+  // 连续随滚动插值：内边距/嘟前缀宽度与透明度全部跟手，无跳变
+  const padY = 6 + 2 * q;
+  const padR = 6 + 10 * q;
+  const prefixW = 48 * q;
+
   return (
     <div
-      className={
-        pinned
-          ? "fixed inset-x-0 top-4 z-40 px-5 sm:px-8 lg:px-12"
-          : "relative z-20 self-start"
-      }
+      className="fixed z-50"
+      style={{
+        top: geometry.top,
+        left: geometry.left,
+        right: geometry.right,
+      }}
     >
-      <div className={pinned ? "mx-auto max-w-7xl" : undefined}>
-        <div
-          className={`flex items-center rounded-full border border-[#e4d6e6] shadow-sm transition-all duration-300 ease-out ${
-            pinned
-              ? "justify-between gap-3 bg-[#fff9fc]/95 px-4 py-2 backdrop-blur-sm"
-              : "gap-2 bg-[#fff9fc]/86 py-1.5 pl-4 pr-1.5"
-          }`}
-        >
-          <span className="flex min-w-0 items-center text-sm font-medium text-[#756a8a]">
-            {/* “嘟·”前缀：仅悬浮时滑入 */}
-            <span
-              className={`flex items-center overflow-hidden whitespace-nowrap transition-all duration-300 ease-out ${
-                pinned ? "max-w-40 opacity-100" : "max-w-0 opacity-0"
-              }`}
-            >
-              嘟
-              <SpaceDot />
-            </span>
-
-            <span className="truncate">{spaceLabel}</span>
-            {identity && (
-              <>
-                <SpaceDot />
-                <span className="truncate text-[#a986a3]">{identity}</span>
-              </>
-            )}
+      <div
+        className="flex items-center justify-between rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
+        style={{
+          paddingTop: padY,
+          paddingBottom: padY,
+          paddingLeft: 16,
+          paddingRight: padR,
+        }}
+      >
+        <span className="flex min-w-0 items-center text-sm font-medium text-[#756a8a]">
+          {/* “嘟·”前缀：宽度与透明度随 q 连续出现 */}
+          <span
+            className="flex items-center overflow-hidden"
+            style={{ width: prefixW, opacity: q }}
+          >
+            嘟
+            <SpaceDot />
           </span>
 
-          <div className="flex shrink-0 items-center gap-2">{buttons}</div>
-        </div>
+          <span className="truncate">{spaceLabel}</span>
+          {identity && (
+            <>
+              <SpaceDot />
+              <span className="truncate text-[#a986a3]">{identity}</span>
+            </>
+          )}
+        </span>
+
+        <div className="flex shrink-0 items-center gap-2">{buttons}</div>
       </div>
     </div>
   );
@@ -1171,9 +1218,9 @@ function AdminLayer({
     return (
       <div className="flex min-h-[68vh] items-center justify-center">
         <div className="w-full max-w-md rounded-lg border border-[#ead8e5] bg-[#fff9fc]/95 p-6 shadow-xl shadow-[#d4b9c9]/20 sm:p-8">
-          <h2 className="text-2xl font-semibold text-[#756a8a]">管理者查看</h2>
+          <h2 className="text-2xl font-semibold text-[#756a8a]">管理员空间</h2>
           <p className="mt-1 text-sm text-[#7b7481]">
-            输入管理员密码进入后台。
+            输入管理员密码进入。
           </p>
           <input
             aria-label="管理员密码"
@@ -1365,19 +1412,6 @@ function AdminPanel({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between rounded-lg border border-[#ead8e5] bg-[#fff9fc]/86 px-5 py-3">
-        <span className="text-sm font-medium text-[#756a8a]">
-          当前：管理者查看
-        </span>
-        <button
-          type="button"
-          onClick={() => void onSessionRefresh()}
-          className="text-sm text-[#a986a3] underline hover:text-[#756a8a]"
-        >
-          退出后台
-        </button>
-      </div>
-
       <div className="flex flex-wrap gap-2">
         {(["public", "pass", "user"] as ScopeKind[]).map((spaceKind) => (
           <button
@@ -1451,7 +1485,7 @@ function AdminPanel({
           <button
             type="button"
             onClick={() => void reload()}
-            className="mt-3 text-sm text-[#965c6d] underline"
+            className="mt-3 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-sm text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
           >
             重试
           </button>
@@ -1549,13 +1583,13 @@ function AdminRow({
           回复：{(item as AdminEntry).reply || "暂无回复"}
         </p>
       )}
-      <div className="mt-2 flex gap-3">
+      <div className="mt-2 flex justify-end gap-2">
         {entryTarget && (
           <button
             type="button"
             onClick={onReply}
             disabled={busy}
-            className="text-xs text-[#756a8a] underline disabled:opacity-60"
+            className={PILL}
           >
             回复
           </button>
@@ -1564,7 +1598,7 @@ function AdminRow({
           type="button"
           onClick={onToggleLock}
           disabled={busy}
-          className="text-xs text-[#756a8a] underline disabled:opacity-60"
+          className={PILL}
         >
           {item.locked ? "解锁" : "锁定"}
         </button>
@@ -1572,7 +1606,7 @@ function AdminRow({
           type="button"
           onClick={onDelete}
           disabled={busy}
-          className="text-xs text-[#965c6d] underline disabled:opacity-60"
+          className={PILL_DANGER}
         >
           删除
         </button>
@@ -1684,7 +1718,7 @@ function AccountSection({
           type="button"
           onClick={() => void create()}
           disabled={saving || !username.trim() || password.length < 6}
-          className="rounded-lg bg-[#b9addd] px-4 py-2 text-sm text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
+          className="rounded-full bg-[#b9addd] px-4 py-2 text-sm text-white transition hover:bg-[#a699cf] disabled:cursor-not-allowed disabled:bg-[#d5cdda]"
         >
           {saving ? "创建中…" : "创建账号"}
         </button>
@@ -1725,14 +1759,14 @@ function AccountSection({
                   <button
                     type="button"
                     onClick={() => void resetPassword(account)}
-                    className="mr-3 text-xs text-[#756a8a] underline"
+                    className="mr-2 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
                   >
                     重置密码
                   </button>
                   <button
                     type="button"
                     onClick={() => void toggleActive(account)}
-                    className="text-xs text-[#756a8a] underline"
+                    className="rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
                   >
                     {account.active ? "停用" : "启用"}
                   </button>
