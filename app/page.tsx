@@ -238,12 +238,13 @@ function StickyHeader({
   const sizerRef = useRef<HTMLDivElement>(null);
   const duRef = useRef<HTMLHeadingElement>(null);
   // 大字自然尺寸 & q=0 小胶囊宽（测量一次，resize 重测）
-  const [dims, setDims] = useState({ duH: 0, duW: 0, barW0: 0, fw: 0 });
+  const [dims, setDims] = useState({ duH: 0, duW: 0, barW0: 0, fw: 0, duFs: 0 });
   const [q, setQ] = useState(0);
 
   const identity = barIdentity(view, session);
   const spaceLabel = SPACE_NAME[view];
-  const K = 0.34;
+  // 落入栏后视觉字号精确=14px（与栏内文字一致）：缩放比按真实自然字号算
+  const K = dims.duFs > 0 ? 14 / dims.duFs : 0.34;
   const easeOut = (x: number) => 1 - Math.pow(1 - x, 3);
   const easeIO = (x: number) =>
     x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
@@ -259,6 +260,7 @@ function StickyHeader({
       duW: du.offsetWidth,
       barW0: sz.offsetWidth,
       fw: frame.offsetWidth,
+      duFs: parseFloat(getComputedStyle(du).fontSize) || 0,
     });
   }, []);
 
@@ -367,6 +369,7 @@ function StickyHeader({
           style={{
             transform: `translateX(${16 * q}px) scale(${scale})`,
             transformOrigin: "left center",
+            fontWeight: Math.round(600 + (500 - 600) * q),
             zIndex: 2,
           }}
         >
@@ -387,8 +390,11 @@ function StickyHeader({
             paddingBottom: 6 + 2 * q,
           }}
         >
-          {/* 给嘟留的左槽：q=0 宽0(嘟在胶囊外)，q=1 = 嘟缩小宽 */}
-          <span style={{ width: dims.duW * K * q }} className="shrink-0" />
+          {/* 给嘟+圆点留的左槽：q=0 宽0(嘟在胶囊外)，q=1 = 嘟缩小宽+gap+圆点 */}
+          <span className="flex shrink-0 items-center gap-2 overflow-hidden" style={{ width: dims.duW * K * q + 8 * q }}>
+            <span style={{ width: dims.duW * K * q }} className="shrink-0" />
+            {q > 0 && <SpaceDot />}
+          </span>
           <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
             <span className="whitespace-nowrap">{spaceLabel}</span>
             {identity && (
