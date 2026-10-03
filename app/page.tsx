@@ -359,7 +359,7 @@ function StickyHeader({
       <div className="relative" style={{ height: dims.duH || undefined }}>
         {/* 隐藏测量：q=0 小胶囊完整宽度 */}
         <div ref={sizerRef} aria-hidden className="pointer-events-none absolute left-0 top-0 invisible">
-          <BarSizerContent view={view} session={session} />
+          <BarSizerContent />
         </div>
 
         {/* 大字“嘟”：只做 translateX+scale，translateY 恒 0，垂直中心恒=轨道中心 */}
@@ -376,9 +376,9 @@ function StickyHeader({
           嘟
         </h1>
 
-        {/* 胶囊背景+内容：纵向 top:50% 居中到轨道 */}
+        {/* 胶囊背景+内容：纵向 top:50% 居中到轨道；内部分两个文档流框 */}
         <div
-          className="absolute flex items-center justify-between gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
+          className="absolute flex items-center rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
           style={{
             left: capsuleLeft,
             right: 0,
@@ -390,20 +390,25 @@ function StickyHeader({
             paddingBottom: 6 + 2 * q,
           }}
         >
-          {/* 给嘟+圆点留的左槽：q=0 宽0(嘟在胶囊外)，q=1 = 嘟缩小宽+gap+圆点 */}
-          <span className="flex shrink-0 items-center gap-2 overflow-hidden" style={{ width: dims.duW * K * q + 8 * q }}>
-            <span style={{ width: dims.duW * K * q }} className="shrink-0" />
+          {/* 左框(flex-1)：占按钮以外的全部宽，内容左对齐——嘟落槽·圆点·空间·身份始终靠左排在一起，永不居中 */}
+          <span className="flex min-w-0 flex-1 items-center justify-start gap-2 overflow-hidden">
+            {/* 嘟占位：随 q 从 0 长到嘟缩小宽，左缘与真实嘟字对齐 */}
+            <span className="shrink-0" style={{ width: dims.duW * K * q }} />
             {q > 0 && <SpaceDot />}
-          </span>
-          <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
-            <span className="whitespace-nowrap">{spaceLabel}</span>
-            {identity && (
-              <>
-                <SpaceDot />
-                <span className="whitespace-nowrap text-[#a986a3]">{identity}</span>
-              </>
+            {/* 空间·身份：q 足够大才出现，窄槽内由 overflow-hidden 自然裁剪，绝不与按钮重叠 */}
+            {q > 0.05 && (
+              <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
+                <span className="whitespace-nowrap">{spaceLabel}</span>
+                {identity && (
+                  <>
+                    <SpaceDot />
+                    <span className="whitespace-nowrap text-[#a986a3]">{identity}</span>
+                  </>
+                )}
+              </span>
             )}
           </span>
+          {/* 右框(shrink-0)：退出/切换按钮，恒定边界 */}
           <div className="flex shrink-0 items-center gap-2">{buttons}</div>
         </div>
       </div>
@@ -429,29 +434,13 @@ function barIdentity(view: Layer, session: SessionInfo | null) {
     : "";
 }
 
-// 量收起态胶囊宽度：与 q=0 胶囊同一盒模型与内容（不含“嘟”前缀），仅用于测量
-function BarSizerContent({
-  view,
-  session,
-}: {
-  view: Layer;
-  session: SessionInfo | null;
-}) {
-  const identity = barIdentity(view, session);
+// 量收起态胶囊宽度：仅右侧按钮区（q=0 胶囊只含按钮），盒模型与真胶囊一致
+function BarSizerContent() {
   return (
     <div
-      className="flex items-center justify-between gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95"
+      className="flex items-center rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95"
       style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 12, paddingRight: 12 }}
     >
-      <span className="flex min-w-0 items-center gap-2 whitespace-nowrap text-sm font-medium text-[#756a8a]">
-        <span>{SPACE_NAME[view]}</span>
-        {identity && (
-          <>
-            <SpaceDot />
-            <span className="text-[#a986a3]">{identity}</span>
-          </>
-        )}
-      </span>
       <div className="flex shrink-0 items-center gap-2">
         <button type="button" className={PILL}>退出</button>
         <button
