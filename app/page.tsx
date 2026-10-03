@@ -235,32 +235,29 @@ function StickyHeader({
   onGeometry: (g: BarGeometry) => void;
 }) {
   const frameRef = useRef<HTMLDivElement>(null);
-  const sizerRef = useRef<HTMLDivElement>(null);
   const duRef = useRef<HTMLHeadingElement>(null);
-  // 大字自然尺寸 & q=0 小胶囊宽（测量一次，resize 重测）
-  const [dims, setDims] = useState({ duH: 0, duW: 0, barW0: 0, fw: 0, duFs: 0 });
+  const btnWrapRef = useRef<HTMLDivElement>(null);
+  // 大字自然尺寸 & 末态行高（测量一次，resize 重测）
+  const [dims, setDims] = useState({ duH: 0, duW: 0, duFs: 0, barH: 0 });
   const [q, setQ] = useState(0);
 
   const identity = barIdentity(view, session);
   const spaceLabel = SPACE_NAME[view];
   // 落入栏后视觉字号精确=14px（与栏内文字一致）：缩放比按真实自然字号算
   const K = dims.duFs > 0 ? 14 / dims.duFs : 0.34;
-  const easeOut = (x: number) => 1 - Math.pow(1 - x, 3);
   const easeIO = (x: number) =>
     x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
 
-  // 测量自然尺寸
+  // 测量大字自然尺寸与末态行高
   const measure = useCallback(() => {
     const du = duRef.current;
-    const sz = sizerRef.current;
-    const frame = frameRef.current;
-    if (!du || !sz || !frame) return;
+    const btn = btnWrapRef.current;
+    if (!du) return;
     setDims({
       duH: du.offsetHeight,
       duW: du.offsetWidth,
-      barW0: sz.offsetWidth,
-      fw: frame.offsetWidth,
       duFs: parseFloat(getComputedStyle(du).fontSize) || 0,
+      barH: btn ? btn.offsetHeight : 0,
     });
   }, []);
 
@@ -309,12 +306,8 @@ function StickyHeader({
     };
   }, [measure, onGeometry]);
 
-  const eo = easeOut(q);
   const e = easeIO(q);
   const scale = 1 + (K - 1) * e;
-  const padX = 12 + 4 * q;
-  // 胶囊左缘：q=0 贴右(框架宽−小胶囊宽)，q=1 到框架最左(0)
-  const capsuleLeft = dims.fw ? (dims.fw - dims.barW0) * (1 - eo) : 0;
 
   const buttons = (
     <>
@@ -354,63 +347,70 @@ function StickyHeader({
     </>
   );
 
+  // 行高：从大字自然高(q=0)连续收到按钮自然高(q=1)
+  const rowH = dims.duH && dims.barH
+    ? dims.duH + (dims.barH - dims.duH) * e
+    : undefined;
+
+  // “空间·身份”淡入时机：嘟开始缩小后再出现
+  const labelOp = Math.min(1, Math.max(0, (q - 0.1) / 0.35));
+
   return (
     <div ref={frameRef} className="sticky top-4 z-50">
-      <div className="relative" style={{ height: dims.duH || undefined }}>
-        {/* 隐藏测量：q=0 小胶囊完整宽度 */}
-        <div ref={sizerRef} aria-hidden className="pointer-events-none absolute left-0 top-0 invisible">
-          <BarSizerContent />
-        </div>
-
-        {/* 大字“嘟”：只做 translateX+scale，translateY 恒 0，垂直中心恒=轨道中心 */}
-        <h1
-          ref={duRef}
-          className="absolute left-0 top-0 text-4xl font-semibold text-[#756a8a] sm:text-6xl"
-          style={{
-            transform: `translateX(${16 * q}px) scale(${scale})`,
-            transformOrigin: "left center",
-            fontWeight: Math.round(600 + (500 - 600) * q),
-            zIndex: 2,
-          }}
-        >
-          嘟
-        </h1>
-
-        {/* 胶囊背景+内容：纵向 top:50% 居中到轨道；内部分两个文档流框 */}
+      <div
+        className="relative flex items-center gap-2 px-4"
+        style={{ height: rowH }}
+      >
+        {/* 装饰背景：零内容、绝对定位铺满，不占布局也不可能遮挡内容；随 q 淡入 */}
         <div
-          className="absolute flex items-center rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
-          style={{
-            left: capsuleLeft,
-            right: 0,
-            top: "50%",
-            transform: "translateY(-50%)",
-            paddingLeft: padX,
-            paddingRight: padX,
-            paddingTop: 6 + 2 * q,
-            paddingBottom: 6 + 2 * q,
-          }}
+          aria-hidden
+          className="pointer-events-none absolute inset-0 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
+          style={{ opacity: q }}
+        />
+
+        {/* 嘟：满高定位盒负责纵向居中，h1 只做 scale —— 任何缩放比下中心恒=行中心，不飘 */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute top-0 flex h-full items-center"
+          style={{ left: 16 }}
         >
-          {/* 左框(flex-1)：占按钮以外的全部宽，内容左对齐——嘟落槽·圆点·空间·身份始终靠左排在一起，永不居中 */}
-          <span className="flex min-w-0 flex-1 items-center justify-start gap-2 overflow-hidden">
-            {/* 嘟占位：随 q 从 0 长到嘟缩小宽，左缘与真实嘟字对齐 */}
-            <span className="shrink-0" style={{ width: dims.duW * K * q }} />
-            {q > 0 && <SpaceDot />}
-            {/* 空间·身份：q 足够大才出现，窄槽内由 overflow-hidden 自然裁剪，绝不与按钮重叠 */}
-            {q > 0.05 && (
-              <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
-                <span className="whitespace-nowrap">{spaceLabel}</span>
-                {identity && (
-                  <>
-                    <SpaceDot />
-                    <span className="whitespace-nowrap text-[#a986a3]">{identity}</span>
-                  </>
-                )}
-              </span>
-            )}
-          </span>
-          {/* 右框(shrink-0)：退出/切换按钮，恒定边界 */}
-          <div className="flex shrink-0 items-center gap-2">{buttons}</div>
+          <h1
+            ref={duRef}
+            className="text-4xl font-semibold text-[#756a8a] sm:text-6xl"
+            style={{
+              transform: `scale(${scale})`,
+              transformOrigin: "left center",
+              fontWeight: Math.round(600 + (500 - 600) * q),
+            }}
+          >
+            嘟
+          </h1>
         </div>
+
+        {/* 嘟占位：在文档流内，宽=嘟当前可视宽，把后面的圆点和文字顶到嘟右侧 */}
+        <span className="shrink-0" style={{ width: (dims.duW || 0) * scale }} />
+
+        {/* 空间·身份：flex-1 在文档流内，右缘即按钮左缘（天然边界，绝不重叠）；内容左对齐，紧靠右贴嘟·圆点，永不居中 */}
+        <span
+          className="flex min-w-0 flex-1 items-center justify-start gap-2 overflow-hidden"
+          style={{ opacity: labelOp }}
+        >
+          <SpaceDot />
+          <span className="whitespace-nowrap text-sm font-medium text-[#756a8a]">
+            {spaceLabel}
+          </span>
+          {identity && (
+            <>
+              <SpaceDot />
+              <span className="whitespace-nowrap text-sm text-[#a986a3]">
+                {identity}
+              </span>
+            </>
+          )}
+        </span>
+
+        {/* 按钮：shrink-0 独立元素框，与文字之间是 flex 文档流边界 */}
+        <div ref={btnWrapRef} className="flex shrink-0 items-center gap-2 py-1.5">{buttons}</div>
       </div>
     </div>
   );
@@ -432,26 +432,6 @@ function barIdentity(view: Layer, session: SessionInfo | null) {
   return view === "user" && session?.username
     ? session.username
     : "";
-}
-
-// 量收起态胶囊宽度：仅右侧按钮区（q=0 胶囊只含按钮），盒模型与真胶囊一致
-function BarSizerContent() {
-  return (
-    <div
-      className="flex items-center rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95"
-      style={{ paddingTop: 6, paddingBottom: 6, paddingLeft: 12, paddingRight: 12 }}
-    >
-      <div className="flex shrink-0 items-center gap-2">
-        <button type="button" className={PILL}>退出</button>
-        <button
-          type="button"
-          className="flex items-center gap-1 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a]"
-        >
-          切换<span>▾</span>
-        </button>
-      </div>
-    </div>
-  );
 }
 
 type BarGeometry = { q: number; top: number; left: number; right: number; h: number };
