@@ -96,13 +96,21 @@ export default function Home() {
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [exitSeq, setExitSeq] = useState(0);
-  // 胶囊几何：q=卷出比例，top/left/right 为 fixed 定位的连续插值结果
+  // 顶部 sticky 框架的真实矩形（供管理员悬浮批量栏定位）；Y 由 CSS sticky 负责，这里只读数
   const [bar, setBar] = useState<BarGeometry>(
-    { q: 0, top: 0, left: 0, right: 0, h: 48, gw: 0 },
+    { q: 0, top: 0, left: 0, right: 0, h: 48 },
   );
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const anchorRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
+  const onGeometry = useCallback((next: BarGeometry) => {
+    setBar((prev) =>
+      Math.abs(prev.q - next.q) > 0.001 ||
+      Math.abs(prev.top - next.top) > 0.5 ||
+      Math.abs(prev.left - next.left) > 0.5 ||
+      Math.abs(prev.right - next.right) > 0.5 ||
+      Math.abs(prev.h - next.h) > 0.5
+        ? next
+        : prev,
+    );
+  }, []);
 
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/session", { cache: "no-store" });
@@ -144,102 +152,6 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  // 共享元素转场：页面唯一的“嘟”字随滚动平移+缩小，落入切换栏左端；栏内不再另有一个嘟
-  useEffect(() => {
-    let raf = 0;
-    const PIN_TOP = 16;
-    const K = 0.34; // 嘟落入栏后的目标缩放（60px→约20px）
-    const easeOut = (x: number) => 1 - Math.pow(1 - x, 3);
-    const easeIO = (x: number) =>
-      x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
-    const anchor = anchorRef.current;
-    const content = contentRef.current;
-    const update = () => {
-      raf = 0;
-      if (!anchor || !content) return;
-      const a = anchor.getBoundingClientRect();
-      const c = content.getBoundingClientRect();
-      // 测量前清掉上一帧 transform，避免污染 getBoundingClientRect
-      const duEl = titleRef.current;
-      if (duEl && duEl.style.transform) duEl.style.transform = "";
-      const du0 = duEl?.getBoundingClientRect();
-      if (!duEl || !du0) return;
-
-      // q：0→1，嘟自然底滚到视口顶（=完全滚出）
-      const duBottom = du0.bottom + window.scrollY;
-      const q = Math.min(1, Math.max(0, window.scrollY / Math.max(1, duBottom)));
-      const eo = easeOut(q); // 胶囊前期快速向左伸展，早点接住嘟
-      const e = easeIO(q);   // 嘟自身位移/缩放进度
-
-      // —— 胶囊几何（左/右缘随 q 收向内容容器）——
-      const viewportW = document.documentElement.clientWidth;
-      // 栏与嘟共用悬浮 Y：未到顶随自然位（与嘟同线），到 16 后一起钉住
-      const top = Math.max(PIN_TOP, a.top);
-      const left = a.left + (c.left - a.left) * eo;
-      const right0 = viewportW - a.right;
-      const right1 = viewportW - c.right;
-      const right = right0 + (right1 - right0) * eo;
-
-      const liveBar = document.querySelector(".fixed.z-50");
-      const barH = liveBar
-        ? liveBar.getBoundingClientRect().height
-        : a.height;
-
-      // —— 嘟：translate + scale（原点左上），末态落入栏左端槽位 ——
-      const scale = 1 + (K - 1) * e;
-      const glyphH = du0.height * scale;
-      const slotLeft = c.left + 16; // 栏 q=1 时 padX=16
-      const tx = (slotLeft - du0.left) * e;
-      // 纵向恒锁定到栏的垂直中心（含缩放补偿）：初始=0，缩放/钉顶时始终同线，不飘移
-      const ty = top + barH / 2 - du0.top - glyphH / 2;
-      duEl.style.position = "relative";
-      duEl.style.transformOrigin = "left top";
-      duEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-      duEl.style.zIndex = "60";
-
-      setBar((prev) =>
-        Math.abs(prev.q - q) > 0.001 ||
-        Math.abs(prev.top - top) > 0.5 ||
-        Math.abs(prev.left - left) > 0.5 ||
-        Math.abs(prev.right - right) > 0.5 ||
-        Math.abs(prev.h - barH) > 0.5 ||
-        Math.abs(prev.gw - du0.width * K) > 0.5
-          ? {
-              q,
-              top,
-              left,
-              right,
-              h: barH,
-              gw: du0.width * K,
-            }
-          : prev,
-      );
-    };
-    const onScroll = () => {
-      // hidden 标签（自动化）不跑 rAF：同步更新，便于真机验证；正常用户走 rAF 节流
-      if (document.hidden) {
-        update();
-        return;
-      }
-      if (!raf) raf = requestAnimationFrame(update);
-    };
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    // 量尺/容器尺寸变化（会话加载完成、切换层致身份增减）也重算
-    const ro = new ResizeObserver(onScroll);
-    if (anchor && content) {
-      ro.observe(anchor);
-      ro.observe(content);
-    }
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      ro.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, []);
-
   const go = (layer: Layer) => {
     setView(layer);
     setMenuOpen(false);
@@ -262,29 +174,23 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[#f8eef4] text-[#5d5868]">
-      <section className="relative min-h-screen overflow-hidden px-5 py-6 sm:px-8 lg:px-12">
+      <section className="relative min-h-screen px-5 py-6 sm:px-8 lg:px-12">
         <div className={`absolute inset-0 ${MORANDI_GRADIENT}`} />
 
-        <div ref={contentRef} className="relative mx-auto flex max-w-7xl flex-col gap-6">
+        <div className="relative mx-auto flex max-w-7xl flex-col gap-6">
           <p className="text-sm text-[#a986a3]">
             浅粉 · 浅紫 · 浅蓝的明媚树洞
           </p>
-          <header className="flex items-center justify-between gap-4">
-            <h1
-              ref={titleRef}
-              className="text-4xl font-semibold tracking-normal text-[#756a8a] sm:text-6xl"
-            >
-              嘟
-            </h1>
-            {/* 量尺：不可见(visibility:hidden)但仍占自然尺寸，量出收起态胶囊的真实宽度与顶位 */}
-            <div
-              ref={anchorRef}
-              aria-hidden
-              className="invisible"
-            >
-              <BarSizerContent view={view} session={session} />
-            </div>
-          </header>
+          <StickyHeader
+            view={view}
+            session={session}
+            menuOpen={menuOpen}
+            onToggleMenu={() => setMenuOpen((open) => !open)}
+            onCloseMenu={() => setMenuOpen(false)}
+            onGo={go}
+            onExit={() => void exitCurrent()}
+            onGeometry={onGeometry}
+          />
 
           {session === null ? (
             <LoadingSpinner label="正在加载…" />
@@ -304,24 +210,200 @@ export default function Home() {
           )}
         </div>
       </section>
-
-      {/* 真正的空间胶囊：fixed，几何随滚动逐帧连续插值 */}
-      <SpaceBar
-        view={view}
-        session={session}
-        geometry={bar}
-        menuOpen={menuOpen}
-        onToggleMenu={() => setMenuOpen((open) => !open)}
-        onCloseMenu={() => setMenuOpen(false)}
-        onGo={go}
-        onExit={() => void exitCurrent()}
-      />
     </main>
   );
 }
 
-// —— 统一顶部空间栏：当前层 + 身份 + 退出 + 切换菜单 ——
-// “嘟”在时与其同线靠右（小胶囊）；“嘟”滑出后同一胶囊转顶部长条椭圆悬浮，连贯过渡。
+// —— 顶部 sticky 框架：把“嘟”和空间切换栏套进同一元素，Y 全靠 CSS，JS 只管 X ——
+function StickyHeader({
+  view,
+  session,
+  menuOpen,
+  onToggleMenu,
+  onCloseMenu,
+  onGo,
+  onExit,
+  onGeometry,
+}: {
+  view: Layer;
+  session: SessionInfo | null;
+  menuOpen: boolean;
+  onToggleMenu: () => void;
+  onCloseMenu: () => void;
+  onGo: (layer: Layer) => void;
+  onExit: () => void;
+  onGeometry: (g: BarGeometry) => void;
+}) {
+  const frameRef = useRef<HTMLDivElement>(null);
+  const sizerRef = useRef<HTMLDivElement>(null);
+  const duRef = useRef<HTMLHeadingElement>(null);
+  // 大字自然尺寸 & q=0 小胶囊宽（测量一次，resize 重测）
+  const [dims, setDims] = useState({ duH: 0, duW: 0, barW0: 0, fw: 0 });
+  const [q, setQ] = useState(0);
+
+  const identity = barIdentity(view, session);
+  const spaceLabel = SPACE_NAME[view];
+  const K = 0.34;
+  const easeOut = (x: number) => 1 - Math.pow(1 - x, 3);
+  const easeIO = (x: number) =>
+    x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+
+  // 测量自然尺寸
+  const measure = useCallback(() => {
+    const du = duRef.current;
+    const sz = sizerRef.current;
+    const frame = frameRef.current;
+    if (!du || !sz || !frame) return;
+    setDims({
+      duH: du.offsetHeight,
+      duW: du.offsetWidth,
+      barW0: sz.offsetWidth,
+      fw: frame.offsetWidth,
+    });
+  }, []);
+
+  useEffect(() => {
+    measure();
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const frame = frameRef.current;
+      if (!frame) return;
+      // 钉顶所需滚动量：框架自然顶到距视口顶 16
+      const frameTopDoc = frame.getBoundingClientRect().top + window.scrollY;
+      const R = Math.max(1, frameTopDoc - 16);
+      const nq = Math.min(1, Math.max(0, window.scrollY / R));
+      setQ(nq);
+      const r = frame.getBoundingClientRect();
+      onGeometry({
+        q: nq,
+        top: r.top,
+        left: r.left,
+        right: document.documentElement.clientWidth - r.right,
+        h: r.height,
+      });
+    };
+    const onScroll = () => {
+      // hidden 自动化标签不跑 rAF：同步；正常用户走 rAF
+      if (document.hidden) {
+        update();
+        return;
+      }
+      if (!raf) raf = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    const ro = new ResizeObserver(() => {
+      measure();
+      onScroll();
+    });
+    if (frameRef.current) ro.observe(frameRef.current);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [measure, onGeometry]);
+
+  const eo = easeOut(q);
+  const e = easeIO(q);
+  const scale = 1 + (K - 1) * e;
+  const padX = 12 + 4 * q;
+  // 胶囊左缘：q=0 贴右(框架宽−小胶囊宽)，q=1 到框架最左(0)
+  const capsuleLeft = dims.fw ? (dims.fw - dims.barW0) * (1 - eo) : 0;
+
+  const buttons = (
+    <>
+      <button type="button" onClick={onExit} className={PILL}>
+        退出
+      </button>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={onToggleMenu}
+          className="flex items-center gap-1 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
+          aria-label="切换空间"
+          aria-expanded={menuOpen}
+        >
+          切换
+          <span className={`transition ${menuOpen ? "rotate-180" : ""}`}>▾</span>
+        </button>
+        {menuOpen && (
+          <>
+            <div className="fixed inset-0 z-[60]" onClick={onCloseMenu} />
+            <div className="absolute right-0 z-[70] mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
+              {(["public", "pass", "user", "admin"] as Layer[]).map((layer) => (
+                <button
+                  key={layer}
+                  type="button"
+                  onClick={() => onGo(layer)}
+                  className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
+                >
+                  {SPACE_NAME[layer]}
+                  {view === layer && <span className="text-[#b9addd]">✓</span>}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </>
+  );
+
+  return (
+    <div ref={frameRef} className="sticky top-4 z-50">
+      <div className="relative" style={{ height: dims.duH || undefined }}>
+        {/* 隐藏测量：q=0 小胶囊完整宽度 */}
+        <div ref={sizerRef} aria-hidden className="pointer-events-none absolute left-0 top-0 invisible">
+          <BarSizerContent view={view} session={session} />
+        </div>
+
+        {/* 大字“嘟”：只做 translateX+scale，translateY 恒 0，垂直中心恒=轨道中心 */}
+        <h1
+          ref={duRef}
+          className="absolute left-0 top-0 text-4xl font-semibold text-[#756a8a] sm:text-6xl"
+          style={{
+            transform: `translateX(${16 * q}px) scale(${scale})`,
+            transformOrigin: "left center",
+            zIndex: 2,
+          }}
+        >
+          嘟
+        </h1>
+
+        {/* 胶囊背景+内容：纵向 top:50% 居中到轨道 */}
+        <div
+          className="absolute flex items-center justify-between gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
+          style={{
+            left: capsuleLeft,
+            right: 0,
+            top: "50%",
+            transform: "translateY(-50%)",
+            paddingLeft: padX,
+            paddingRight: padX,
+            paddingTop: 6 + 2 * q,
+            paddingBottom: 6 + 2 * q,
+          }}
+        >
+          {/* 给嘟留的左槽：q=0 宽0(嘟在胶囊外)，q=1 = 嘟缩小宽 */}
+          <span style={{ width: dims.duW * K * q }} className="shrink-0" />
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
+            <span className="whitespace-nowrap">{spaceLabel}</span>
+            {identity && (
+              <>
+                <SpaceDot />
+                <span className="whitespace-nowrap text-[#a986a3]">{identity}</span>
+              </>
+            )}
+          </span>
+          <div className="flex shrink-0 items-center gap-2">{buttons}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // 大圆点（与 cef5ede 同一实心紫圆）；间距统一由父级控制为 8px
 function SpaceDot() {
@@ -377,122 +459,7 @@ function BarSizerContent({
   );
 }
 
-type BarGeometry = { q: number; top: number; left: number; right: number; h: number; gw: number };
-
-function SpaceBar({
-  view,
-  session,
-  geometry,
-  menuOpen,
-  onToggleMenu,
-  onCloseMenu,
-  onGo,
-  onExit,
-}: {
-  view: Layer;
-  session: SessionInfo | null;
-  geometry: BarGeometry;
-  menuOpen: boolean;
-  onToggleMenu: () => void;
-  onCloseMenu: () => void;
-  onGo: (layer: Layer) => void;
-  onExit: () => void;
-}) {
-  // 口令只存哈希给短标，个人给用户名
-  const identity = barIdentity(view, session);
-  const spaceLabel = SPACE_NAME[view];
-  const q = geometry.q;
-
-  const buttons = (
-    <>
-      <button type="button" onClick={onExit} className={PILL}>
-        退出
-      </button>
-      <div className="relative">
-        <button
-          type="button"
-          onClick={onToggleMenu}
-          className="flex items-center gap-1 rounded-full border border-[#e4d6e6] bg-[#fffafd] px-3 py-1 text-xs text-[#756a8a] transition hover:border-[#c7b9e8] hover:bg-white"
-          aria-label="切换空间"
-          aria-expanded={menuOpen}
-        >
-          切换
-          <span className={`transition ${menuOpen ? "rotate-180" : ""}`}>
-            ▾
-          </span>
-        </button>
-        {menuOpen && (
-          <>
-            <div className="fixed inset-0 z-[60]" onClick={onCloseMenu} />
-            <div className="absolute right-0 z-[70] mt-2 w-44 overflow-hidden rounded-2xl border border-[#ead8e5] bg-[#fff9fc] py-1 shadow-lg">
-              {(["public", "pass", "user", "admin"] as Layer[]).map((layer) => (
-                <button
-                  key={layer}
-                  type="button"
-                  onClick={() => onGo(layer)}
-                  className="flex w-full items-center justify-between px-4 py-2 text-left text-sm text-[#756a8a] transition hover:bg-[#f5edf8]"
-                >
-                  {SPACE_NAME[layer]}
-                  {view === layer && (
-                    <span className="text-[#b9addd]">✓</span>
-                  )}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-      </div>
-    </>
-  );
-
-  // 连续随滚动插值：内边距左右对称并一起从 12→16
-  const padY = 6 + 2 * q;
-  const padX = 12 + 4 * q;
-
-  return (
-    <div
-      className="fixed z-50"
-      style={{
-        top: geometry.top,
-        left: geometry.left,
-        right: geometry.right,
-      }}
-    >
-      <div
-        className="flex items-center justify-between gap-2 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
-        style={{
-          paddingTop: padY,
-          paddingBottom: padY,
-          paddingLeft: padX,
-          paddingRight: padX,
-        }}
-      >
-        <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
-          {/* 落入槽：宽度随 q 展开到 gw，为从页面移入的“嘟”留位；栏自身不画嘟 */}
-          {q > 0 && (
-            <span
-              className="flex shrink-0 items-center gap-2 overflow-hidden"
-              style={{ width: geometry.gw * q + 12 }}
-            >
-              <span style={{ width: geometry.gw * q }} />
-              <SpaceDot />
-            </span>
-          )}
-
-          <span className="whitespace-nowrap">{spaceLabel}</span>
-          {identity && (
-            <>
-              <SpaceDot />
-              <span className="whitespace-nowrap text-[#a986a3]">{identity}</span>
-            </>
-          )}
-        </span>
-
-        <div className="flex shrink-0 items-center gap-2">{buttons}</div>
-      </div>
-    </div>
-  );
-}
+type BarGeometry = { q: number; top: number; left: number; right: number; h: number };
 
 // —— §7.2 普通空间：三空间完全一致的主界面 ——
 
