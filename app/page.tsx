@@ -98,7 +98,7 @@ export default function Home() {
   const [exitSeq, setExitSeq] = useState(0);
   // 胶囊几何：q=卷出比例，top/left/right 为 fixed 定位的连续插值结果
   const [bar, setBar] = useState<BarGeometry>(
-    { q: 0, top: 0, left: 0, right: 0, h: 48 },
+    { q: 0, top: 0, left: 0, right: 0, h: 48, gw: 0 },
   );
   const titleRef = useRef<HTMLHeadingElement>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
@@ -144,10 +144,14 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
-  // “嘟”卷出过程的连续进度 q；胶囊 fixed 几何由锚点(小胶囊自然位)向内容容器边缘插值
+  // 共享元素转场：页面唯一的“嘟”字随滚动平移+缩小，落入切换栏左端；栏内不再另有一个嘟
   useEffect(() => {
     let raf = 0;
     const PIN_TOP = 16;
+    const K = 0.34; // 嘟落入栏后的目标缩放（60px→约20px）
+    const easeOut = (x: number) => 1 - Math.pow(1 - x, 3);
+    const easeIO = (x: number) =>
+      x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
     const anchor = anchorRef.current;
     const content = contentRef.current;
     const update = () => {
@@ -155,57 +159,68 @@ export default function Home() {
       if (!anchor || !content) return;
       const a = anchor.getBoundingClientRect();
       const c = content.getBoundingClientRect();
-      // 测量前先清掉上一帧的缩放，避免 transform 污染 getBoundingClientRect（反馈漂移）
+      // 测量前清掉上一帧 transform，避免污染 getBoundingClientRect
       const duEl = titleRef.current;
       if (duEl && duEl.style.transform) duEl.style.transform = "";
-      const du = duEl?.getBoundingClientRect();
-      // q 绑定“嘟”字卷出全过程：scrollY=0 起步，嘟底完全离开视口顶时 q=1。
-      // 这样一滑动胶囊就开始伸展，到嘟字消失恰好完成，过程更平缓连贯。
-      const duBottom = (du ? du.bottom : a.bottom) + window.scrollY;
-      const s = window.scrollY;
-      // 覆盖式过渡：p1 前胶囊快速移到“嘟”右侧；p1→p2 慢慢向左扫过嘟并盖住。
-      // p 以嘟底为基准：p1=.22（到达嘟右侧），p2=.5（完全盖住、钉顶）。
-      const p1 = duBottom * 0.22;
-      const p2 = duBottom * 0.5;
-      const duRight = du ? du.right : a.left;
-      const duLeft = du ? du.left : c.left;
-      let left: number;
-      let ingest = 0;
-      if (s <= p1) {
-        // 阶段1：左缘从收起位快速到嘟右侧+10
-        const t = p1 > 0 ? s / p1 : 1;
-        left = a.left + (duRight + 10 - a.left) * t;
-      } else if (s < p2) {
-        // 阶段2：扫过嘟（吞入进度 ingest 0→1）
-        ingest = (s - p1) / (p2 - p1);
-        left = duRight + 10 + (duLeft - (duRight + 10)) * ingest;
-      } else {
-        ingest = 1;
-        left = c.left;
-      }
-      // 覆盖完成前与嘟同线（跟随锚点），完成后钉到 16
-      const top = ingest >= 1 ? PIN_TOP : a.top;
+      const du0 = duEl?.getBoundingClientRect();
+      if (!duEl || !du0) return;
+
+      // q：0→1，嘟自然底滚到视口顶（=完全滚出）
+      const duBottom = du0.bottom + window.scrollY;
+      const q = Math.min(1, Math.max(0, window.scrollY / Math.max(1, duBottom)));
+      const eo = easeOut(q); // 胶囊前期快速向左伸展，早点接住嘟
+      const e = easeIO(q);   // 嘟自身位移/缩放进度
+
+      // —— 胶囊几何（左/右缘随 q 收向内容容器）——
       const viewportW = document.documentElement.clientWidth;
-      const fixedRight = viewportW - a.right;
-      // 真实胶囊高度：读取已渲染的 fixed 栏；首帧未就绪时回退量尺高度
-      const liveBar = document.querySelector('.fixed.z-50');
-      const barH = liveBar ? liveBar.getBoundingClientRect().height : a.height;
-      // 页面标题随吞入进度轻微缩小（向左收缩），胶囊左缘同时扫过覆盖
-      if (titleRef.current) {
-        titleRef.current.style.transformOrigin = "left center";
-        titleRef.current.style.transform = `scale(${1 - 0.22 * ingest})`;
-      }
+      // 栏与嘟共用悬浮 Y：未到顶随自然位（与嘟同线），到 16 后一起钉住
+      const top = Math.max(PIN_TOP, a.top);
+      const left = a.left + (c.left - a.left) * eo;
+      const right0 = viewportW - a.right;
+      const right1 = viewportW - c.right;
+      const right = right0 + (right1 - right0) * eo;
+
+      const liveBar = document.querySelector(".fixed.z-50");
+      const barH = liveBar
+        ? liveBar.getBoundingClientRect().height
+        : a.height;
+
+      // —— 嘟：translate + scale（原点左上），末态落入栏左端槽位 ——
+      const scale = 1 + (K - 1) * e;
+      const glyphH = du0.height * scale;
+      const slotLeft = c.left + 16; // 栏 q=1 时 padX=16
+      const tx = (slotLeft - du0.left) * e;
+      // 纵向恒锁定到栏的垂直中心（含缩放补偿）：初始=0，缩放/钉顶时始终同线，不飘移
+      const ty = top + barH / 2 - du0.top - glyphH / 2;
+      duEl.style.position = "relative";
+      duEl.style.transformOrigin = "left top";
+      duEl.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+      duEl.style.zIndex = "60";
+
       setBar((prev) =>
-        Math.abs(prev.q - ingest) > 0.001 ||
+        Math.abs(prev.q - q) > 0.001 ||
         Math.abs(prev.top - top) > 0.5 ||
         Math.abs(prev.left - left) > 0.5 ||
-        Math.abs(prev.right - fixedRight) > 0.5 ||
-        Math.abs(prev.h - barH) > 0.5
-          ? { q: ingest, top, left, right: fixedRight, h: barH }
+        Math.abs(prev.right - right) > 0.5 ||
+        Math.abs(prev.h - barH) > 0.5 ||
+        Math.abs(prev.gw - du0.width * K) > 0.5
+          ? {
+              q,
+              top,
+              left,
+              right,
+              h: barH,
+              gw: du0.width * K,
+            }
           : prev,
       );
     };
     const onScroll = () => {
+      // hidden 标签（自动化）不跑 rAF：同步更新，便于真机验证；正常用户走 rAF 节流
+      if (document.hidden) {
+        update();
+        return;
+      }
       if (!raf) raf = requestAnimationFrame(update);
     };
     update();
@@ -362,7 +377,7 @@ function BarSizerContent({
   );
 }
 
-type BarGeometry = { q: number; top: number; left: number; right: number; h: number };
+type BarGeometry = { q: number; top: number; left: number; right: number; h: number; gw: number };
 
 function SpaceBar({
   view,
@@ -453,14 +468,16 @@ function SpaceBar({
         }}
       >
         <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-[#756a8a]">
-          {/* “嘟·”前缀：maxWidth 与透明度随 q 连续出现；q=0 宽度 0、不占间距 */}
-          <span
-            className="flex items-center gap-2 overflow-hidden"
-            style={{ maxWidth: 40 * q, opacity: q, display: q > 0 ? "flex" : "none" }}
-          >
-            嘟
-            <SpaceDot />
-          </span>
+          {/* 落入槽：宽度随 q 展开到 gw，为从页面移入的“嘟”留位；栏自身不画嘟 */}
+          {q > 0 && (
+            <span
+              className="flex shrink-0 items-center gap-2 overflow-hidden"
+              style={{ width: geometry.gw * q + 12 }}
+            >
+              <span style={{ width: geometry.gw * q }} />
+              <SpaceDot />
+            </span>
+          )}
 
           <span className="whitespace-nowrap">{spaceLabel}</span>
           {identity && (
