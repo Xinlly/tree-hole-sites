@@ -401,7 +401,7 @@ function StickyHeader({
     : undefined;
 
   // “空间·身份”淡入时机：嘟开始缩小后再出现
-  const labelOp = Math.min(1, Math.max(0, (q - 0.1) / 0.35));
+  const labelOp = 1;
 
   return (
     <div ref={frameRef} className="sticky top-4 z-50">
