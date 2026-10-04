@@ -60,6 +60,25 @@ type SessionInfo = {
   username: string | null;
 };
 
+type SessionResponse = {
+  unlocked: boolean;
+  admin: boolean;
+  passId: string | null;
+  passLabel: string | null;
+  username: string | null;
+};
+
+// /api/session 字段名与页面所用 SessionInfo 不同，仅在此处映射一次
+function toSessionInfo(data: SessionResponse): SessionInfo {
+  return {
+    public: data.unlocked,
+    admin: data.admin,
+    passId: data.passId,
+    passLabel: data.passLabel,
+    username: data.username,
+  };
+}
+
 const SPACE_NAME: Record<Layer, string> = {
   public: "公共空间",
   pass: "口令空间",
@@ -114,43 +133,54 @@ export default function Home() {
 
   const refreshSession = useCallback(async () => {
     const res = await fetch("/api/session", { cache: "no-store" });
-    const data = (await res.json()) as {
-      unlocked: boolean;
-      admin: boolean;
-      passId: string | null;
-      passLabel: string | null;
-      username: string | null;
-    };
-    setSession({
-      public: data.unlocked,
-      admin: data.admin,
-      passId: data.passId,
-      passLabel: data.passLabel,
-      username: data.username,
-    });
+    const data = (await res.json()) as SessionResponse;
+    setSession(toSessionInfo(data));
   }, []);
 
+  const [loadError, setLoadError] = useState(false);
+  const [retrySeq, setRetrySeq] = useState(0);
+
+  // 冷导航后的首个会话加载：单次 6s 超时，失败最多重试 3 次（退避 400/900/1600ms）；
+  // retrySeq 变化（点「再试一次」）时重走同一流程
   useEffect(() => {
-    fetch("/api/session", { cache: "no-store" })
-      .then((res) => res.json())
-      .then(
-        (data: {
-          unlocked: boolean;
-          admin: boolean;
-          passId: string | null;
-          passLabel: string | null;
-          username: string | null;
-        }) =>
-          setSession({
-            public: data.unlocked,
-            admin: data.admin,
-            passId: data.passId,
-            passLabel: data.passLabel,
-            username: data.username,
-          }),
-      )
-      .catch(() => {});
-  }, []);
+    const backoff = [400, 900, 1600];
+    let cancelled = false;
+    let sleepTimer: ReturnType<typeof setTimeout> | undefined;
+    let activeController: AbortController | null = null;
+    void (async () => {
+      for (let attempt = 0; attempt <= backoff.length; attempt++) {
+        const controller = new AbortController();
+        activeController = controller;
+        const timer = setTimeout(() => controller.abort(), 6000);
+        try {
+          const res = await fetch("/api/session", {
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          if (!res.ok) throw new Error(`session request failed: ${res.status}`);
+          const data = (await res.json()) as SessionResponse;
+          clearTimeout(timer);
+          if (!cancelled) setSession(toSessionInfo(data));
+          return;
+        } catch {
+          clearTimeout(timer);
+          if (cancelled) return;
+          if (attempt < backoff.length) {
+            await new Promise((resolve) => {
+              sleepTimer = setTimeout(resolve, backoff[attempt]);
+            });
+          }
+        }
+        if (cancelled) return;
+      }
+      if (!cancelled) setLoadError(true);
+    })();
+    return () => {
+      cancelled = true;
+      activeController?.abort();
+      if (sleepTimer) clearTimeout(sleepTimer);
+    };
+  }, [retrySeq]);
 
   const go = (layer: Layer) => {
     setView(layer);
@@ -192,7 +222,25 @@ export default function Home() {
             onGeometry={onGeometry}
           />
 
-          {session === null ? (
+          {loadError ? (
+            <div className="flex flex-col items-center gap-4 py-16 text-center">
+              <p className="text-sm leading-7 text-[#756a8a]">
+                树洞的小门刚刚没有被轻轻敲开，
+                <br />
+                也许是风把信号吹乱了。歇一口气，再试一次好吗？
+              </p>
+              <button
+                type="button"
+                className={PILL_PRIMARY}
+                onClick={() => {
+                  setLoadError(false);
+                  setRetrySeq((n) => n + 1);
+                }}
+              >
+                再试一次
+              </button>
+            </div>
+          ) : session === null ? (
             <LoadingSpinner label="正在加载…" />
           ) : view === "admin" ? (
             <AdminLayer
