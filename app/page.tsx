@@ -340,7 +340,11 @@ function StickyHeader({
     };
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
+    const onResize = () => {
+      measure();
+      onScroll();
+    };
+    window.addEventListener("resize", onResize);
     const ro = new ResizeObserver(() => {
       measure();
       onScroll();
@@ -348,7 +352,7 @@ function StickyHeader({
     if (frameRef.current) ro.observe(frameRef.current);
     return () => {
       window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
+      window.removeEventListener("resize", onResize);
       ro.disconnect();
       if (raf) cancelAnimationFrame(raf);
     };
@@ -406,7 +410,7 @@ function StickyHeader({
   return (
     <div ref={frameRef} className="sticky top-4 z-50">
       <div
-        className="relative flex items-center gap-2 px-4"
+        className="relative flex items-center gap-1 px-4 sm:gap-2"
         style={{ height: rowH }}
       >
         {/* 装饰背景：零内容、绝对定位铺满，不占布局也不可能遮挡内容；随 q 淡入 */}
@@ -440,17 +444,17 @@ function StickyHeader({
 
         {/* 空间·身份：flex-1 在文档流内，右缘即按钮左缘（天然边界，绝不重叠）；内容左对齐，紧靠右贴嘟·圆点，永不居中 */}
         <span
-          className="flex min-w-0 flex-1 items-center justify-start gap-2 overflow-hidden"
+          className="flex min-w-0 flex-1 items-center justify-start gap-1 overflow-hidden sm:gap-2"
           style={{ opacity: labelOp }}
         >
           <SpaceDot />
-          <span className="whitespace-nowrap text-sm font-medium text-[#756a8a]">
+          <span className="block min-w-0 flex-1 truncate whitespace-nowrap text-sm font-medium text-[#756a8a]">
             {spaceLabel}
           </span>
           {identity && (
             <>
               <SpaceDot />
-              <span className="whitespace-nowrap text-sm text-[#a986a3]">
+              <span className="block min-w-0 truncate whitespace-nowrap text-sm text-[#a986a3]">
                 {identity}
               </span>
             </>
