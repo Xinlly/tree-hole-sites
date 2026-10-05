@@ -442,23 +442,35 @@ function StickyHeader({
         {/* 嘟占位：在文档流内，宽=嘟当前可视宽，把后面的圆点和文字顶到嘟右侧 */}
         <span className="shrink-0" style={{ width: (dims.duW || 0) * scale }} />
 
-        {/* 空间·身份：flex-1 在文档流内，右缘即按钮左缘（天然边界，绝不重叠）；内容左对齐，紧靠右贴嘟·圆点，永不居中 */}
+        {/* 空间·身份：flex-1 在文档流内；前后弹性空白按 q 分配自由空间——q=0 前空白 grow=1 把整组顶到右侧紧挨按钮，q=1 后空白 grow=1 把整组顶到左侧紧挨嘟占位，中间线性滑动 */}
         <span
-          className="flex min-w-0 flex-1 items-center justify-start gap-1 overflow-hidden sm:gap-2"
+          className="flex min-w-0 flex-1 items-center overflow-hidden"
           style={{ opacity: labelOp }}
         >
-          <SpaceDot />
-          <span className="block min-w-0 flex-1 truncate whitespace-nowrap text-sm font-medium text-[#756a8a]">
-            {spaceLabel}
+          <span
+            aria-hidden
+            className="min-w-0 basis-0"
+            style={{ flexGrow: 1 - q }}
+          />
+          <span className="flex min-w-0 shrink items-center gap-1 sm:gap-2">
+            <SpaceDot />
+            <span className="block min-w-0 truncate whitespace-nowrap text-sm font-medium text-[#756a8a]">
+              {spaceLabel}
+            </span>
+            {identity && (
+              <>
+                <SpaceDot />
+                <span className="block min-w-0 truncate whitespace-nowrap text-sm text-[#a986a3]">
+                  {identity}
+                </span>
+              </>
+            )}
           </span>
-          {identity && (
-            <>
-              <SpaceDot />
-              <span className="block min-w-0 truncate whitespace-nowrap text-sm text-[#a986a3]">
-                {identity}
-              </span>
-            </>
-          )}
+          <span
+            aria-hidden
+            className="min-w-0 basis-0"
+            style={{ flexGrow: q }}
+          />
         </span>
 
         {/* 按钮：shrink-0 独立元素框，与文字之间是 flex 文档流边界 */}
