@@ -442,7 +442,15 @@ function StickyHeader({
         {/* 嘟占位：在文档流内，宽=嘟当前可视宽，把后面的圆点和文字顶到嘟右侧 */}
         <span className="shrink-0" style={{ width: (dims.duW || 0) * scale }} />
 
-        {/* 空间·身份：flex-1 在文档流内；前后弹性空白按 q 分配自由空间——q=0 前空白 grow=1 把整组顶到右侧紧挨按钮，q=1 后空白 grow=1 把整组顶到左侧紧挨嘟占位，中间线性滑动 */}
+        {/* 空间圆点：独立于滑动内容组，永远在嘟右侧、吃行 gap（8px）；展开度 q 控制显隐 */}
+        <span
+          aria-hidden
+          className="pointer-events-none inline-block h-2 w-2 shrink-0 rounded-full bg-[#b9addd]"
+          style={{ opacity: q }}
+        />
+
+        {/* 空间·身份：flex-1 在文档流内；前后弹性空白按 q 分配自由空间——q=0 前空白 grow=1 把整组顶到右侧紧挨按钮，q=1 后空白 grow=1 把整组顶到左侧紧挨圆点，中间线性滑动。
+            内容组 shrink-0：宽度恒为自然宽（max-w-full 仅窄宽时收敛），不随 q 被压缩，杜绝逐帧重排闪没 */}
         <span
           className="flex min-w-0 flex-1 items-center overflow-hidden"
           style={{ opacity: labelOp }}
@@ -452,8 +460,7 @@ function StickyHeader({
             className="min-w-0 basis-0"
             style={{ flexGrow: 1 - q }}
           />
-          <span className="flex min-w-0 shrink items-center gap-1 sm:gap-2">
-            <SpaceDot />
+          <span className="flex min-w-0 max-w-full shrink-0 items-center gap-1 sm:gap-2">
             <span className="block min-w-0 truncate whitespace-nowrap text-sm font-medium text-[#756a8a]">
               {spaceLabel}
             </span>
