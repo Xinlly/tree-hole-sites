@@ -1,8 +1,27 @@
 // 不透明游标：仅编码上一页最后返回项的 ULID（afterId），
-// 可附带不可变封存块提示 {blockKey,index}（设计 §4.2）。
+// 可附带不可变封存块提示 {blockKey,index}（§4.2/§5）。
+// v3：块键携带空间前缀；调用方须确认块键空间与当前会话空间一致（§5）。
 import { Buffer } from "node:buffer";
 
-const ID_RE = /^(?:[0-9A-HJKMNP-TV-Z]{26}|\d+)$/;
+const ULID = "[0-9A-HJKMNP-TV-Z]{26}"; // Crockford，大写
+const COLLECTION = "(?:messages|entries)";
+const BLOCK_SUFFIX = `/blocks/${ULID}\\.json\\.gz`;
+
+// §5 三类 v3 块键前缀
+export const V3_PUBLIC_BLOCK_RE = new RegExp(
+  `^v3/public/${COLLECTION}${BLOCK_SUFFIX}$`,
+);
+export const V3_PASS_BLOCK_RE = new RegExp(
+  `^v3/pass/[0-9a-f]{64}/${COLLECTION}${BLOCK_SUFFIX}$`,
+);
+export const V3_USER_BLOCK_RE = new RegExp(
+  `^v3/user/${ULID}/${COLLECTION}${BLOCK_SUFFIX}$`,
+);
+const V3_ANY_BLOCK_RE = new RegExp(
+  `^v3/(?:public|pass/[0-9a-f]{64}|user/${ULID})/${COLLECTION}${BLOCK_SUFFIX}$`,
+);
+
+const ID_RE = new RegExp(`^${ULID}$`);
 
 export type CursorValue = {
   afterId: string;
@@ -48,7 +67,7 @@ export function decodeCursor(cursor: string): CursorValue {
   if (hasBlock) {
     if (
       typeof value.blockKey !== "string" ||
-      !/^v2\/(?:messages|entries)\/blocks\/.+\.json\.gz$/.test(value.blockKey)
+      !V3_ANY_BLOCK_RE.test(value.blockKey)
     ) {
       throw new Error("invalid cursor");
     }
@@ -64,6 +83,21 @@ export function decodeCursor(cursor: string): CursorValue {
   return {
     afterId: value.afterId,
     blockKey: hasBlock ? (value.blockKey as string) : undefined,
-    index: hasIndex ? (value.index as number) : undefined,
+    index: hasBlock ? (value.index as number) : undefined,
   };
 }
+
+// 块键前缀必须与当前会话空间一致（跨空间游标不可用，§5/§8）
+export function blockKeyMatchesScope(blockKey: string, scope: ScopeLike): boolean {
+  if (scope.kind === "public") {
+    return V3_PUBLIC_BLOCK_RE.test(blockKey);
+  }
+  if (scope.kind === "pass") {
+    return V3_PASS_BLOCK_RE.test(blockKey) &&
+      blockKey.startsWith(`v3/pass/${scope.id}/`);
+  }
+  return V3_USER_BLOCK_RE.test(blockKey) &&
+    blockKey.startsWith(`v3/user/${scope.id}/`);
+}
+
+type ScopeLike = { kind: string; id: string };
