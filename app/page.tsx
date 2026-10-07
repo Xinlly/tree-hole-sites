@@ -413,10 +413,10 @@ function StickyHeader({
         className="relative flex items-center gap-1 px-4 sm:gap-2"
         style={{ height: rowH }}
       >
-        {/* 装饰背景：零内容、绝对定位铺满，不占布局也不可能遮挡内容；随 q 淡入 */}
+        {/* 装饰背景：绝对定位铺满、沉到行内内容之下（-z-10，父级 sticky 已建层叠上下文）；随 q 淡入，不遮挡内容 */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
+          className="pointer-events-none absolute inset-0 -z-10 rounded-full border border-[#e4d6e6] bg-[#fff9fc]/95 shadow-sm backdrop-blur-sm"
           style={{ opacity: q }}
         />
 
