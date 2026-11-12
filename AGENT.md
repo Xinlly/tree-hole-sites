@@ -35,7 +35,6 @@ app/
 db/                     Drizzle 脚手架（schema.ts 仍是旧 D1 表，产品运行不引用；见 HANDOFF 待办）
 drizzle/                Drizzle 迁移产物
 docs/design/            四份设计文档（对象存储/分块存储/自托管 Node/四层空间）
-docs/acceptance/        验收截图（当前未入 git，见 HANDOFF）
 examples/d1/            早期 D1 参考代码，非运行应用
 public/                 静态资源（favicon 等）
 scripts/                一次性数据迁移脚本（legacy→v2、sql→object、v2→v3）

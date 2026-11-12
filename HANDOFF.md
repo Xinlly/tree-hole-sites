@@ -19,7 +19,7 @@
 ### 工作区已收敛（与任务书事实 1 一致，实测确认）
 - `git worktree list` 现**仅 primary 一条**；`/tmp/th-develop`、`/tmp/th-v110` 两个临时 worktree 已移除/prune，物理目录不存在。
 - 4 个本地 `feat/*` 分支（object-storage / chunked-object-storage / self-host-node / spaces-four-layer）均已删除，本地 `git branch` 不再出现；其内容已并入主线（此前 `git cherry`/`merge-base --is-ancestor` 验证零独有提交）。远端同名分支 `origin/feat/chunked-object-storage` 亦于 2026-11-12 按裁决 `push --delete` 删除，删后 `git ls-remote --heads` 仅剩 `develop`、`main`。
-- primary 工作区 `git status`：除未跟踪的 `docs/acceptance/` 外干净。
+- primary 工作区 `git status`：干净（原未跟踪的 `docs/acceptance/` 已于 2026-11-12 按裁决删除，见第 3 节）。
 
 ## 2. 设计文档指针（实测存在）
 
@@ -32,12 +32,11 @@
 ### ⚠️ 纠偏：任务书事实 2「对象存储只交付设计、未写产品代码」已过时
 实测 `app/api/store/object-store.ts` 为 **833 行完整实现**，与 `sql-store.ts` 共同实现 `store/types.ts` 的 `Store` 接口，由 `store/index.ts` 按 `STORAGE_TYPE` 选择；并已随 **v1.1.0 上线 raiyun2**（生产用 `STORAGE_TYPE=object` + 阿里云 OSS）。即对象存储**设计与产品代码均已交付并在生产运行**，不是“仅设计”。
 
-## 3. 验收截图（未跟踪，待办）
+## 3. 验收截图（已删除）
 
-`docs/acceptance/` 4 张 PNG 实测存在但**未入 git**（`git status` 显示 `?? docs/acceptance/`）：
-`01-gate.png`、`02-home.png`、`03-sealed.png`、`04-logged-out.png`。
-- 原因：primary 长期检出在发布分支，未擅自提交。
-- **待办：建议随 develop 入库**（需一次显式 `git add docs/acceptance/` 并提交，本次文档任务不含此项，未动）。
+按 xavier 2026-11-12 裁决“截图不要了”，原 `docs/acceptance/` 下 4 张未跟踪 PNG
+（`01-gate.png`、`02-home.png`、`03-sealed.png`、`04-logged-out.png`，共 844K）已逐文件删除并 `rmdir` 空目录，
+`docs/acceptance/` 不再存在。这些文件从未入 git（删除前 `git ls-files` 跟踪数为 0），删除不影响任何历史。
 
 ## 4. 外移研究报告指针（路径已纠偏）
 
@@ -55,7 +54,7 @@
 
 1. **待 xavier 决策**
    - ~~本地 `release-v1.1.0` 分支去留（与 main 同点 `c1f27dc`）~~ → 已按 2026-11-12 裁决用 `git branch -d` 删除，仓库只保留 `develop`、`main`。
-   - `docs/acceptance/` 4 张截图是否随 develop 入库。
+   - ~~`docs/acceptance/` 4 张截图是否随 develop 入库~~ → 已按 2026-11-12 裁决“截图不要了”删除，目录不再存在（见第 3 节）。
    - 功能 parity（对照 2026-08-03 原版）确认丢失的 4 项是否恢复：封存随机暖语、封存回声确认卡片、实时字数徽章、密码框 autoFocus/autoComplete；另有 3 项削弱（分层退出、列表密度、中文日期）。详见 `temp/treehole-feature-parity-20261010/parity.md`（仓库外临时目录）。
 2. **代码卫生（方案已出，未动工）**
    - `app/chatgpt-auth.ts` 模板残留、零产品引用，建议确认后删。
