@@ -8,17 +8,17 @@
 复核命令：`git branch -vv`、`git worktree list`、`git branch -r`、`git rev-parse`。
 
 - primary 工作区路径：`/var/lib/hermes/workspace/projects/our/tree-hole-sites`
-- 本地分支（仅 3 个）：
-  - `develop` → `2726035`，跟踪 `origin/develop`，track 干净（无 ahead/behind）
-  - `main` → `c1f27dc`，跟踪 `origin/main`，track 干净
-  - `release-v1.1.0` → `c1f27dc`，upstream 显示 `origin/main`（与 main 同点）——**去留待 xavier 定，勿删**
-- 远端分支：`origin/main`、`origin/develop`、`origin/feat/chunked-object-storage`、`origin/HEAD→main`
+- 本地分支（**仅 2 个，按 xavier 2026-11-12 裁决收敛**）：
+  - `develop`（文档提交前 HEAD `21837a2`，随后续文档提交前进），跟踪 `origin/develop`
+  - `main` → `c1f27dc`，跟踪 `origin/main`
+  - 原 `release-v1.1.0`（与 main 同点 `c1f27dc`）已用 `git branch -d` 安全删除（git merged 校验通过，非 `-D`）。
+- 远端分支：仅 `origin/HEAD→main`、`origin/develop`、`origin/main`；原 `origin/feat/chunked-object-storage` 已 `push --delete` 删除（删前取证：对 main/develop 均为祖先、两个 `..` 独有提交与 `git cherry` patch-id 全空）。
 - main 与 develop 关系：`develop` 已全部并入 main；`main` 相对 develop 多 4 个提交（两次 release merge + 两次版本 pin：`c2ac9ce`/`2d7e4c2` v1.0.0、`16b71e8`/`c1f27dc` v1.1.0），develop 相对 main 无独有提交。
 - 当前已发布版本：**v1.1.0**（tag 已在远端，main=`c1f27dc`）。
 
 ### 工作区已收敛（与任务书事实 1 一致，实测确认）
 - `git worktree list` 现**仅 primary 一条**；`/tmp/th-develop`、`/tmp/th-v110` 两个临时 worktree 已移除/prune，物理目录不存在。
-- 4 个本地 `feat/*` 分支（object-storage / chunked-object-storage / self-host-node / spaces-four-layer）均已删除，本地 `git branch` 不再出现；其内容已并入主线（此前 `git cherry`/`merge-base --is-ancestor` 验证零独有提交）。注意远端仍保留 `origin/feat/chunked-object-storage`。
+- 4 个本地 `feat/*` 分支（object-storage / chunked-object-storage / self-host-node / spaces-four-layer）均已删除，本地 `git branch` 不再出现；其内容已并入主线（此前 `git cherry`/`merge-base --is-ancestor` 验证零独有提交）。远端同名分支 `origin/feat/chunked-object-storage` 亦于 2026-11-12 按裁决 `push --delete` 删除，删后 `git ls-remote --heads` 仅剩 `develop`、`main`。
 - primary 工作区 `git status`：除未跟踪的 `docs/acceptance/` 外干净。
 
 ## 2. 设计文档指针（实测存在）
@@ -54,7 +54,7 @@
 ## 6. 未完成项 / 待办（按优先级）
 
 1. **待 xavier 决策**
-   - 本地 `release-v1.1.0` 分支去留（与 main 同点 `c1f27dc`）。
+   - ~~本地 `release-v1.1.0` 分支去留（与 main 同点 `c1f27dc`）~~ → 已按 2026-11-12 裁决用 `git branch -d` 删除，仓库只保留 `develop`、`main`。
    - `docs/acceptance/` 4 张截图是否随 develop 入库。
    - 功能 parity（对照 2026-08-03 原版）确认丢失的 4 项是否恢复：封存随机暖语、封存回声确认卡片、实时字数徽章、密码框 autoFocus/autoComplete；另有 3 项削弱（分层退出、列表密度、中文日期）。详见 `temp/treehole-feature-parity-20261010/parity.md`（仓库外临时目录）。
 2. **代码卫生（方案已出，未动工）**
